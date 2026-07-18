@@ -16,8 +16,8 @@ type WorkerRepository interface {
 	CreateWorker(ctx context.Context, worker *models.Worker) error
 	GetWorkers(ctx context.Context) ([]models.Worker, error)
 	GetWorkerByID(ctx context.Context, id string) (*models.Worker, error)
-	UpdateHeartbeat(ctx context.Context,
-	id string, status models.WorkerStatus) error
+	UpdateHeartbeat(ctx context.Context,id string, status models.WorkerStatus) error
+	MarkOfflineWorkers(ctx context.Context, cutoff time.Time) (int64, error)
 }
 
 type PostgresWorkerRepository struct {
@@ -188,4 +188,27 @@ func (wr *PostgresWorkerRepository) UpdateHeartbeat(ctx context.Context, id stri
 	}
 
 	return nil
+}
+
+func (wr *PostgresWorkerRepository) MarkOfflineWorkers(ctx context.Context, cutoff time.Time) (int64, error){
+	const query = `
+		UPDATE workers
+		SET
+			status = 'OFFLINE',
+			updated_at = NOW()
+		WHERE
+			status != 'OFFLINE'
+			AND last_heartbeat < $1;
+	`
+	result, err := wr.db.Exec(
+		ctx,
+		query,
+		cutoff,
+	)
+
+	if err != nil {
+		return 0, fmt.Errorf("mark worker offline: %w", err)
+	}
+
+	return result.RowsAffected(), nil
 }

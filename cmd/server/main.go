@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"vulcan/internal/api/router"
 	"vulcan/internal/config"
 	"vulcan/internal/db"
+	"vulcan/internal/reconciler"
 	"vulcan/internal/repository"
 	"vulcan/internal/service"
 )
@@ -40,6 +42,13 @@ func main() {
 	workerRepository := repository.NewWorkerRepository(pool)
 	workerService := service.NewWorkerService(workerRepository)
 	workerHandler := handlers.NewWorkerHandler(workerService)
+
+	workerReconciler := reconciler.NewWorkerReconciler(workerRepository, logger)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go workerReconciler.Start(ctx)
 
 	// Initialize router
 	r := api.NewRouter(testHandler, workerHandler)
