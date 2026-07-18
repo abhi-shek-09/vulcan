@@ -37,6 +37,7 @@ func NewRouter(testHandler *handlers.TestHandler, workerHandler *handlers.Worker
 			r.Post("/", testHandler.CreateTest)
 			r.Get("/", testHandler.GetTests)
 			r.Get("/{id}", testHandler.GetTestByID)
+			r.Post("/{id}/start",testHandler.StartTest)
 			r.Post("/{id}/stop", testHandler.StopTest)
 		})
 

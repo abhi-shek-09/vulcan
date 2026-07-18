@@ -5,13 +5,13 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-
 	"vulcan/internal/api/handlers"
 	"vulcan/internal/api/router"
 	"vulcan/internal/config"
 	"vulcan/internal/db"
 	"vulcan/internal/reconciler"
 	"vulcan/internal/repository"
+	"vulcan/internal/scheduler"
 	"vulcan/internal/service"
 )
 
@@ -35,13 +35,16 @@ func main() {
 	defer pool.Close()
 
 	// Dependency Injection
-	testRepository := repository.NewTestRepository(pool)
-	testService := service.NewTestService(testRepository)
-	testHandler := handlers.NewTestHandler(testService)
 
 	workerRepository := repository.NewWorkerRepository(pool)
 	workerService := service.NewWorkerService(workerRepository)
 	workerHandler := handlers.NewWorkerHandler(workerService)
+
+	schedulerSvc := scheduler.NewDefaultScheduler(workerRepository)
+	testRepository := repository.NewTestRepository(pool)
+	testService := service.NewTestService(testRepository, schedulerSvc, workerRepository)
+	testHandler := handlers.NewTestHandler(testService)
+
 
 	workerReconciler := reconciler.NewWorkerReconciler(workerRepository, logger)
 

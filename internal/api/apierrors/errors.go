@@ -11,4 +11,6 @@ var (
 	ErrInternal     = errors.New("internal error")
 	ErrFailedConn   = errors.New("failed to create data")
 	ErrWorkerNotFound = errors.New("worker not found")
+	ErrInsufficientWorkers = errors.New("insufficient workers available")
+	ErrInvalidTestState = errors.New("invalid test state")
 )

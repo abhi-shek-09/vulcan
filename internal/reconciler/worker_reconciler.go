@@ -41,7 +41,8 @@ func (r *WorkerReconciler) Start(ctx context.Context) {
 }
 
 func (r *WorkerReconciler) reconcile(ctx context.Context) {
-	cutoff := time.Now().UTC().Add(-15 * time.Second)
+	// for current testing feasibility its 2 mins, or else itll be 15 seconds
+	cutoff := time.Now().UTC().Add(-120 * time.Second)
 	affected, err := r.repo.MarkOfflineWorkers(ctx, cutoff)
 	if err != nil {
 		r.log.Error("failed to reconcile dead workers", "error", err)

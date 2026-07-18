@@ -17,6 +17,7 @@ type TestRepository interface {
 	GetTests(ctx context.Context) ([]models.Test, error)
 	GetTestByID(ctx context.Context, id string) (*models.Test, error)
 	UpdateStatus(ctx context.Context, id string, status models.TestStatus) error
+	
 }
 
 type PostgresTestRepository struct {
@@ -34,11 +35,12 @@ func (r *PostgresTestRepository) CreateTest(ctx context.Context, test *models.Te
 		INSERT INTO tests (
 			id,
 			name,
+    		worker_count,
 			status,
 			created_at,
 			updated_at
 		)
-		VALUES ($1, $2, $3, $4, $5)
+		VALUES ($1, $2, $3, $4, $5, $6)
 	` // avoiding sql injection
 
 	_, err := r.db.Exec(
@@ -46,6 +48,7 @@ func (r *PostgresTestRepository) CreateTest(ctx context.Context, test *models.Te
 		query,
 		test.ID,
 		test.Name,
+    	test.WorkerCount,
 		test.Status,
 		test.CreatedAt,
 		test.UpdatedAt,
@@ -63,6 +66,7 @@ func (r *PostgresTestRepository) GetTests(ctx context.Context) ([]models.Test, e
 		SELECT
 			id,
 			name,
+			worker_count,
 			status,
 			created_at,
 			updated_at
@@ -84,6 +88,7 @@ func (r *PostgresTestRepository) GetTests(ctx context.Context) ([]models.Test, e
 		if err := rows.Scan(
 			&test.ID,
 			&test.Name,
+			&test.WorkerCount,
 			&test.Status,
 			&test.CreatedAt,
 			&test.UpdatedAt,
@@ -106,6 +111,7 @@ func (r *PostgresTestRepository) GetTestByID(ctx context.Context, id string) (*m
 		SELECT
 			id,
 			name,
+			worker_count,
 			status,
 			created_at,
 			updated_at
@@ -118,6 +124,7 @@ func (r *PostgresTestRepository) GetTestByID(ctx context.Context, id string) (*m
 	err := r.db.QueryRow(ctx, query, id).Scan(
 		&test.ID,
 		&test.Name,
+		&test.WorkerCount,
 		&test.Status,
 		&test.CreatedAt,
 		&test.UpdatedAt,
@@ -160,3 +167,4 @@ func (r *PostgresTestRepository) UpdateStatus(ctx context.Context, id string, st
 
 	return nil
 }
+

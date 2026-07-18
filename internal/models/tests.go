@@ -17,9 +17,10 @@ const (
 )
 
 type Test struct {
-	ID        string
-	Name      string
-	Status    TestStatus
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID          string
+	Name        string
+	WorkerCount int
+	Status      TestStatus
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"strings"
 	"vulcan/internal/api/apierrors"
 	"vulcan/internal/models"
 
@@ -18,6 +19,8 @@ type WorkerRepository interface {
 	GetWorkerByID(ctx context.Context, id string) (*models.Worker, error)
 	UpdateHeartbeat(ctx context.Context,id string, status models.WorkerStatus) error
 	MarkOfflineWorkers(ctx context.Context, cutoff time.Time) (int64, error)
+	ReserveWorkersForTest(ctx context.Context, testID string, workerCount int) ([]models.Worker, error)
+	ReleaseWorkersForTest(ctx context.Context,testID string,) error
 }
 
 type PostgresWorkerRepository struct {
@@ -211,4 +214,206 @@ func (wr *PostgresWorkerRepository) MarkOfflineWorkers(ctx context.Context, cuto
 	}
 
 	return result.RowsAffected(), nil
+}
+
+func (wr *PostgresWorkerRepository) ReserveWorkersForTest(ctx context.Context, testID string, workerCount int) ([]models.Worker, error) {
+
+	tx, err := wr.db.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin reservation transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	const selectQuery = `
+		SELECT id
+		FROM workers
+		WHERE status = 'IDLE'
+		ORDER BY last_heartbeat DESC
+		FOR UPDATE SKIP LOCKED
+		LIMIT $1;
+	`
+
+	rows, err := tx.Query(ctx, selectQuery, workerCount)
+	if err != nil {
+		return nil, fmt.Errorf("lock idle workers: %w", err)
+	}
+	defer rows.Close()
+
+	var workerIDs []string
+
+	for rows.Next() {
+		var id string
+
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan worker id: %w", err)
+		}
+
+		workerIDs = append(workerIDs, id)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate locked workers: %w", err)
+	}
+
+	if len(workerIDs) < workerCount {
+		return nil, apierrors.ErrInsufficientWorkers
+	}
+
+	const updateQuery = `
+		UPDATE workers
+		SET
+			status = 'RESERVED',
+			updated_at = NOW()
+		WHERE id = ANY($1)
+		RETURNING
+			id,
+			hostname,
+			version,
+			status,
+			cpu_count,
+			memory_mb,
+			registered_at,
+			last_heartbeat,
+			updated_at;
+	`
+
+	updateRows, err := tx.Query(ctx, updateQuery, workerIDs)
+	if err != nil {
+		return nil, fmt.Errorf("reserve workers: %w", err)
+	}
+	defer updateRows.Close()
+
+	var reservedWorkers []models.Worker
+
+	for updateRows.Next() {
+		var w models.Worker
+
+		if err := updateRows.Scan(
+			&w.ID,
+			&w.Hostname,
+			&w.Version,
+			&w.Status,
+			&w.CPUCount,
+			&w.MemoryMB,
+			&w.RegisteredAt,
+			&w.LastHeartbeat,
+			&w.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan reserved worker: %w", err)
+		}
+
+		reservedWorkers = append(reservedWorkers, w)
+	}
+
+	if err := updateRows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate reserved workers: %w", err)
+	}
+
+	// Step 3: Create test-worker mappings
+	var (
+		values       = []interface{}{testID}
+		placeholders []string
+	)
+
+	for i, worker := range reservedWorkers {
+		placeholders = append(
+			placeholders,
+			fmt.Sprintf("($1, $%d, NOW())", i+2),
+		)
+
+		values = append(values, worker.ID)
+	}
+
+	// insert into test workers table => instead of one by one insert, we do a bulk insert
+	// INSERT INTO test_workers (test_id, worker_id, assigned_at) 
+	// VALUES ($1, $2, NOW()), ($1, $3, NOW()), ($1, $4, NOW());
+	insertQuery := fmt.Sprintf(`
+		INSERT INTO test_workers (
+			test_id,
+			worker_id,
+			assigned_at
+		)
+		VALUES %s;
+	`, strings.Join(placeholders, ","))
+
+	if _, err := tx.Exec(ctx, insertQuery, values...); err != nil {
+		return nil, fmt.Errorf("create test-worker mappings: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit reservation transaction: %w", err)
+	}
+
+	return reservedWorkers, nil
+}
+
+func (wr *PostgresWorkerRepository) ReleaseWorkersForTest(ctx context.Context,testID string,) error{
+	tx, err := wr.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin release transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	const selectQuery = `
+		SELECT worker_id
+		FROM test_workers
+		WHERE test_id = $1
+		FOR UPDATE;
+	`
+
+	rows, err := tx.Query(ctx, selectQuery, testID)
+    if err != nil {
+        return fmt.Errorf("lock test-worker mappings: %w", err)
+    }
+    defer rows.Close()
+
+    var workerIDs []string
+    for rows.Next() {
+        var workerID string
+        if err := rows.Scan(&workerID); err != nil {
+            return fmt.Errorf("scan assigned worker id: %w", err)
+        }
+        workerIDs = append(workerIDs, workerID)
+    }
+
+    if err := rows.Err(); err != nil {
+        return fmt.Errorf("iterate assigned worker mappings: %w", err)
+    }
+
+	if len(workerIDs) == 0 {
+        // return nil - this will return without committing the transaction
+		return tx.Commit(ctx)
+	}
+
+    // Transition the workers back to an IDLE status state
+    const updateQuery = `
+        UPDATE workers
+		SET
+			status = 'IDLE',
+			updated_at = NOW()
+		WHERE
+			id = ANY($1)
+			AND status = 'RESERVED';
+    `
+
+    if _, err := tx.Exec(ctx, updateQuery, workerIDs); err != nil {
+        return fmt.Errorf("update workers status to idle: %w", err)
+    }
+
+    // Delete the mapping records out of the link table safely
+    const deleteQuery = `
+        DELETE FROM test_workers
+        WHERE test_id = $1;
+    `
+
+    if _, err := tx.Exec(ctx, deleteQuery, testID); err != nil {
+        return fmt.Errorf("delete test-worker mappings: %w", err)
+    }
+
+    // Finalize all operations to disk atomically
+    if err := tx.Commit(ctx); err != nil {
+        return fmt.Errorf("commit release transaction: %w", err)
+    }
+
+    return nil
 }
