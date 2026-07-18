@@ -37,8 +37,12 @@ func main() {
 	testService := service.NewTestService(testRepository)
 	testHandler := handlers.NewTestHandler(testService)
 
+	workerRepository := repository.NewWorkerRepository(pool)
+	workerService := service.NewWorkerService(workerRepository)
+	workerHandler := handlers.NewWorkerHandler(workerService)
+
 	// Initialize router
-	r := api.NewRouter(testHandler)
+	r := api.NewRouter(testHandler, workerHandler)
 
 	logger.Info(
 		"starting control plane",

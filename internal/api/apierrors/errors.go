@@ -10,4 +10,5 @@ var (
 	ErrConflict     = errors.New("conflict")
 	ErrInternal     = errors.New("internal error")
 	ErrFailedConn   = errors.New("failed to create data")
+	ErrWorkerNotFound = errors.New("worker not found")
 )

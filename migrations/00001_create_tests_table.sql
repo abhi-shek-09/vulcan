@@ -10,4 +10,4 @@ CREATE TABLE tests (
 
 -- +goose Down
 
-DROP TABLE tests;
+DROP TABLE IF EXISTS tests;

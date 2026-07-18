@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 	"time"
 
@@ -12,7 +11,7 @@ import (
 	"vulcan/internal/api/response"
 )
 
-func NewRouter(testHandler *handlers.TestHandler) *chi.Mux {
+func NewRouter(testHandler *handlers.TestHandler, workerHandler *handlers.WorkerHandler) *chi.Mux {
 	r := chi.NewRouter()
 
 	// Middleware
@@ -27,17 +26,26 @@ func NewRouter(testHandler *handlers.TestHandler) *chi.Mux {
 
 	// API
 	r.Route("/api/v1", func(r chi.Router) {
-		r.Post("/tests", testHandler.CreateTest)
-		r.Get("/tests", testHandler.GetTests)
-		r.Get("/tests/{id}", testHandler.GetTestByID)
-		r.Post("/tests/{id}/stop", testHandler.StopTest)
+		r.Route("/workers", func(r chi.Router) {
+			r.Post("/", workerHandler.RegisterWorker)
+			r.Get("/", workerHandler.GetWorkers)
+			r.Get("/{id}", workerHandler.GetWorkerByID)
+			r.Post("/{id}/heartbeat",workerHandler.Heartbeat,)
+		})
+
+		r.Route("/tests", func(r chi.Router) {
+			r.Post("/", testHandler.CreateTest)
+			r.Get("/", testHandler.GetTests)
+			r.Get("/{id}", testHandler.GetTestByID)
+			r.Post("/{id}/stop", testHandler.StopTest)
+		})
+
 	})
 
 	return r
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
-	response.JSON(w, http.StatusOK, json.NewEncoder(w).Encode(map[string]string{
-		"status": "ok",
-	}))
+    payload := map[string]string{"status": "ok"}
+    response.JSON(w, http.StatusOK, payload)
 }
