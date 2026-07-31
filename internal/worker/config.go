@@ -15,6 +15,9 @@ type Config struct {
 	Polling      PollingConfig      `yaml:"polling"`
 	Resources    ResourceConfig     `yaml:"resources"`
 	Logging      LoggingConfig      `yaml:"logging"`
+
+	// Runtime override (not loaded from YAML)
+	OverrideHostname string `yaml:"-"`
 }
 
 type WorkerConfig struct {
@@ -44,6 +47,7 @@ type LoggingConfig struct {
 }
 
 func LoadConfig(path string) (*Config, error) {
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
@@ -53,6 +57,13 @@ func LoadConfig(path string) (*Config, error) {
 
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse yaml: %w", err)
+	}
+
+	// Runtime override from environment.
+	cfg.OverrideHostname = os.Getenv("WORKER_HOSTNAME")
+
+	if cfg.OverrideHostname != "" {
+		cfg.Worker.Hostname = cfg.OverrideHostname
 	}
 
 	if err := cfg.Validate(); err != nil {

@@ -9,7 +9,11 @@ run:
 
 .PHONY: run-worker
 run-worker:
-	go run ./cmd/worker
+	WORKER_HOSTNAME=$(HOSTNAME) go run ./cmd/worker
+
+.PHONY: run-aggregator
+run-aggregator:
+	go run ./cmd/aggregator
 
 .PHONY: migrate-create
 migrate-create:
