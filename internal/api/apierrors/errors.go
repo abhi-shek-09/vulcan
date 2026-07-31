@@ -13,4 +13,5 @@ var (
 	ErrWorkerNotFound = errors.New("worker not found")
 	ErrInsufficientWorkers = errors.New("insufficient workers available")
 	ErrInvalidTestState = errors.New("invalid test state")
+	ErrAssignmentNotFound = errors.New("assignment not found")
 )

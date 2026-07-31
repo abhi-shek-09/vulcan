@@ -20,7 +20,11 @@ type WorkerRepository interface {
 	UpdateHeartbeat(ctx context.Context,id string, status models.WorkerStatus) error
 	MarkOfflineWorkers(ctx context.Context, cutoff time.Time) (int64, error)
 	ReserveWorkersForTest(ctx context.Context, testID string, workerCount int) ([]models.Worker, error)
-	ReleaseWorkersForTest(ctx context.Context,testID string,) error
+	ReleaseWorkersForTest(ctx context.Context, testID string,) error
+
+	GetReservedAssignment(ctx context.Context, workerID string,) (*models.Assignment, error)
+	MarkAssignmentRunning(ctx context.Context, testID string,workerID string,) error
+	MarkAssignmentCompleted(ctx context.Context, testID string, workerID string,) error
 }
 
 type PostgresWorkerRepository struct {
@@ -318,7 +322,7 @@ func (wr *PostgresWorkerRepository) ReserveWorkersForTest(ctx context.Context, t
 	for i, worker := range reservedWorkers {
 		placeholders = append(
 			placeholders,
-			fmt.Sprintf("($1, $%d, NOW())", i+2),
+			fmt.Sprintf("($1, $%d, 'RESERVED', NOW())", i+2),
 		)
 
 		values = append(values, worker.ID)
@@ -331,6 +335,7 @@ func (wr *PostgresWorkerRepository) ReserveWorkersForTest(ctx context.Context, t
 		INSERT INTO test_workers (
 			test_id,
 			worker_id,
+			status,
 			assigned_at
 		)
 		VALUES %s;
@@ -347,7 +352,7 @@ func (wr *PostgresWorkerRepository) ReserveWorkersForTest(ctx context.Context, t
 	return reservedWorkers, nil
 }
 
-func (wr *PostgresWorkerRepository) ReleaseWorkersForTest(ctx context.Context,testID string,) error{
+func (wr *PostgresWorkerRepository) ReleaseWorkersForTest(ctx context.Context, testID string) error {
 	tx, err := wr.db.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin release transaction: %w", err)
@@ -362,58 +367,64 @@ func (wr *PostgresWorkerRepository) ReleaseWorkersForTest(ctx context.Context,te
 	`
 
 	rows, err := tx.Query(ctx, selectQuery, testID)
-    if err != nil {
-        return fmt.Errorf("lock test-worker mappings: %w", err)
-    }
-    defer rows.Close()
+	if err != nil {
+		return fmt.Errorf("lock test-worker mappings: %w", err)
+	}
+	defer rows.Close()
 
-    var workerIDs []string
-    for rows.Next() {
-        var workerID string
-        if err := rows.Scan(&workerID); err != nil {
-            return fmt.Errorf("scan assigned worker id: %w", err)
-        }
-        workerIDs = append(workerIDs, workerID)
-    }
+	var workerIDs []string
 
-    if err := rows.Err(); err != nil {
-        return fmt.Errorf("iterate assigned worker mappings: %w", err)
-    }
+	for rows.Next() {
+		var workerID string
+
+		if err := rows.Scan(&workerID); err != nil {
+			return fmt.Errorf("scan assigned worker id: %w", err)
+		}
+
+		workerIDs = append(workerIDs, workerID)
+	}
+
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate assigned worker mappings: %w", err)
+	}
 
 	if len(workerIDs) == 0 {
-        // return nil - this will return without committing the transaction
 		return tx.Commit(ctx)
 	}
 
-    // Transition the workers back to an IDLE status state
-    const updateQuery = `
-        UPDATE workers
+	// Release workers back to IDLE.
+	const updateWorkersQuery = `
+		UPDATE workers
 		SET
 			status = 'IDLE',
 			updated_at = NOW()
 		WHERE
 			id = ANY($1)
 			AND status = 'RESERVED';
-    `
+	`
 
-    if _, err := tx.Exec(ctx, updateQuery, workerIDs); err != nil {
-        return fmt.Errorf("update workers status to idle: %w", err)
-    }
+	if _, err := tx.Exec(ctx, updateWorkersQuery, workerIDs); err != nil {
+		return fmt.Errorf("release workers: %w", err)
+	}
 
-    // Delete the mapping records out of the link table safely
-    const deleteQuery = `
-        DELETE FROM test_workers
-        WHERE test_id = $1;
-    `
+	// Mark assignments as completed instead of deleting them.
+	const completeAssignmentsQuery = `
+		UPDATE test_workers
+		SET
+			status = 'COMPLETED',
+			completed_at = NOW()
+		WHERE
+			test_id = $1
+			AND status IN ('RESERVED', 'RUNNING');
+	`
 
-    if _, err := tx.Exec(ctx, deleteQuery, testID); err != nil {
-        return fmt.Errorf("delete test-worker mappings: %w", err)
-    }
+	if _, err := tx.Exec(ctx, completeAssignmentsQuery, testID); err != nil {
+		return fmt.Errorf("complete test-worker assignments: %w", err)
+	}
 
-    // Finalize all operations to disk atomically
-    if err := tx.Commit(ctx); err != nil {
-        return fmt.Errorf("commit release transaction: %w", err)
-    }
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit release transaction: %w", err)
+	}
 
-    return nil
+	return nil
 }

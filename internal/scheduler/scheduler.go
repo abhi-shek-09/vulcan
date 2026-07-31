@@ -45,3 +45,4 @@ func (s *DefaultScheduler) AllocateWorkers(
 
 	return workers, nil
 }
+

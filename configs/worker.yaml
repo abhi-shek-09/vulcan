@@ -1,0 +1,19 @@
+worker:
+  hostname: worker-1
+  version: v1.0.0
+
+control_plane:
+  url: http://localhost:8080
+
+heartbeat:
+  interval: 5s
+
+polling:
+  interval: 3s
+
+resources:
+  cpu_count: 8
+  memory_mb: 16384
+
+logging:
+  level: info

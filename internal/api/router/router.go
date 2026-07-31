@@ -30,7 +30,10 @@ func NewRouter(testHandler *handlers.TestHandler, workerHandler *handlers.Worker
 			r.Post("/", workerHandler.RegisterWorker)
 			r.Get("/", workerHandler.GetWorkers)
 			r.Get("/{id}", workerHandler.GetWorkerByID)
-			r.Post("/{id}/heartbeat",workerHandler.Heartbeat,)
+			r.Post("/{id}/heartbeat",workerHandler.Heartbeat)
+			r.Get("/{id}/assignment", workerHandler.GetWorkerAssignment)
+			r.Post("/{id}/assignment/start", workerHandler.StartAssignment)
+			r.Post("/{id}/assignment/complete", workerHandler.CompleteAssignment)
 		})
 
 		r.Route("/tests", func(r chi.Router) {

@@ -7,6 +7,10 @@ endif
 run:
 	go run ./cmd/server
 
+.PHONY: run-worker
+run-worker:
+	go run ./cmd/worker
+
 .PHONY: migrate-create
 migrate-create:
 	goose -s -dir migrations create $(NAME) sql
