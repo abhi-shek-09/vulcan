@@ -5,6 +5,7 @@ import (
 	"log/slog"
 
 	"vulcan/internal/controlplane"
+	"vulcan/internal/metrics"
 	"vulcan/internal/models"
 )
 
@@ -12,18 +13,24 @@ type Worker struct {
 	config *Config
 	logger *slog.Logger
 	client *controlplane.Client
-
+	publisher *metrics.Publisher
 	id       string
 	hostname string
 	status   models.WorkerStatus
 	version  string
 }
 
-func New(config *Config, logger *slog.Logger) *Worker {
+func New(
+	config *Config,
+	logger *slog.Logger,
+	publisher *metrics.Publisher,
+) *Worker {
+
 	return &Worker{
-		config: config,
-		logger: logger,
-		client: controlplane.New(config.ControlPlane.URL),
+		config:    config,
+		logger:    logger,
+		client:    controlplane.New(config.ControlPlane.URL),
+		publisher: publisher,
 
 		hostname: config.Worker.Hostname,
 		version:  config.Worker.Version,

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"vulcan/internal/metrics"
 	"vulcan/internal/worker"
 )
 
@@ -49,8 +50,17 @@ func main() {
 	)
 
 	defer cancel()
+	publisher, err := metrics.NewPublisher("nats://localhost:4222")
+	if err != nil {
+		logger.Error(
+			"failed to connect to NATS",
+			"error", err,
+		)
+		os.Exit(1)
+	}
 
-	w := worker.New(cfg, logger)
+	defer publisher.Close()
+	w := worker.New(cfg, logger, publisher)
 
 	runtime := worker.NewRuntime(
 		logger,
