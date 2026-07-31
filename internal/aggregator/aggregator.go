@@ -4,7 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"time"
-
+	"vulcan/internal/victoria"
 	"github.com/nats-io/nats.go"
 )
 
@@ -13,6 +13,7 @@ type Aggregator struct {
 	config *Config
 	conn *nats.Conn
 	store *Store
+	writer *victoria.Writer
 }
 
 func New(cfg *Config, logger *slog.Logger) (*Aggregator, error) {
@@ -26,6 +27,7 @@ func New(cfg *Config, logger *slog.Logger) (*Aggregator, error) {
 		config: cfg,
 		conn:   nc,
 		store: NewStore(),
+		writer: victoria.New("http://localhost:8428"),
 	}, nil
 }
 
@@ -42,11 +44,13 @@ func (a *Aggregator) Run(ctx context.Context) error {
 func (a *Aggregator) report() {
 
 	a.store.mu.Lock()
-	defer a.store.mu.Unlock()
+
+	snapshots := make([]Snapshot, 0, len(a.store.tests))
 
 	for testID, window := range a.store.tests {
 
 		window.mu.Lock()
+
 		if window.Requests == 0 {
 			window.mu.Unlock()
 			delete(a.store.tests, testID)
@@ -58,28 +62,24 @@ func (a *Aggregator) report() {
 			avgLatency = window.TotalLatency / float64(window.Requests)
 		}
 
-		rps := window.Requests
-
 		successRate := 0.0
-
 		if window.Requests > 0 {
 			successRate = (float64(window.Successes) / float64(window.Requests)) * 100
 		}
 
-		a.logger.Info(
-			"global metrics",
-			"test_id", window.TestID,
-			"workers", len(window.Workers),
-			"rps", rps,
-			"requests", window.Requests,
-			"successes", window.Successes,
-			"failures", window.Failures,
-			"success_rate", successRate,
-			"avg_latency_ms", avgLatency,
-			"max_latency_ms", window.MaxLatency,
-			"bytes_sent", window.BytesSent,
-			"bytes_received", window.BytesReceived,
-		)
+		snapshots = append(snapshots, Snapshot{
+			TestID: window.TestID,
+			Workers: len(window.Workers),
+			Requests: window.Requests,
+			Successes: window.Successes,
+			Failures: window.Failures,
+			BytesSent: window.BytesSent,
+			BytesReceived: window.BytesReceived,
+			AvgLatency: avgLatency,
+			MaxLatency: window.MaxLatency,
+			SuccessRate: successRate,
+			RPS: window.Requests,
+		})
 
 		window.Requests = 0
 		window.Successes = 0
@@ -88,10 +88,59 @@ func (a *Aggregator) report() {
 		window.BytesReceived = 0
 		window.TotalLatency = 0
 		window.MaxLatency = 0
-		window.Workers = make(map[string]struct{})
 		window.WindowStart = time.Time{}
 		window.WindowEnd = time.Time{}
+		window.Workers = make(map[string]struct{})
 
 		window.mu.Unlock()
+	}
+
+	a.store.mu.Unlock()
+
+	// Everything below runs WITHOUT any locks.
+
+	for _, s := range snapshots {
+
+		a.logger.Info(
+			"global metrics",
+			"test_id", s.TestID,
+			"workers", s.Workers,
+			"rps", s.RPS,
+			"requests", s.Requests,
+			"successes", s.Successes,
+			"failures", s.Failures,
+			"success_rate", s.SuccessRate,
+			"avg_latency_ms", s.AvgLatency,
+			"max_latency_ms", s.MaxLatency,
+			"bytes_sent", s.BytesSent,
+			"bytes_received", s.BytesReceived,
+		)
+
+		payload := buildVictoriaPayload(
+			s.TestID,
+
+			s.Requests,
+			s.Successes,
+			s.Failures,
+
+			s.Workers,
+
+			s.AvgLatency,
+			s.MaxLatency,
+
+			s.BytesSent,
+			s.BytesReceived,
+		)
+
+		if err := a.writer.Write(
+			context.Background(),
+			payload,
+		); err != nil {
+
+			a.logger.Error(
+				"victoria write failed",
+				"error", err,
+			)
+		}
 	}
 }
