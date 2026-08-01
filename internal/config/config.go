@@ -9,6 +9,7 @@ import (
 type Config struct {
 	Port        string
 	DatabaseURL string
+	VictoriaMetricsURL string
 }
 
 func Load() (*Config, error) {
@@ -17,6 +18,7 @@ func Load() (*Config, error) {
 	cfg := &Config{
 		Port:        os.Getenv("PORT"),
 		DatabaseURL: os.Getenv("DB_URL"),
+		VictoriaMetricsURL: os.Getenv("VICTORIA_METRICS_URL"),
 	}
 
 	if err := cfg.validate(); err != nil {
@@ -33,6 +35,12 @@ func (c *Config) validate() error {
 
 	if c.DatabaseURL == "" {
 		return errors.New("DB_URL environment variable is required")
+	}
+
+	if c.VictoriaMetricsURL == "" {
+		return errors.New(
+			"VICTORIA_METRICS_URL environment variable is required",
+		)
 	}
 
 	return nil

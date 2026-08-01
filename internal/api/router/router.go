@@ -11,7 +11,7 @@ import (
 	"vulcan/internal/api/response"
 )
 
-func NewRouter(testHandler *handlers.TestHandler, workerHandler *handlers.WorkerHandler) *chi.Mux {
+func NewRouter(testHandler *handlers.TestHandler, workerHandler *handlers.WorkerHandler, dashboardHandler *handlers.DashboardHandler,) *chi.Mux {
 	r := chi.NewRouter()
 
 	// Middleware
@@ -42,6 +42,8 @@ func NewRouter(testHandler *handlers.TestHandler, workerHandler *handlers.Worker
 			r.Get("/{id}", testHandler.GetTestByID)
 			r.Post("/{id}/start",testHandler.StartTest)
 			r.Post("/{id}/stop", testHandler.StopTest)
+			r.Get("/{id}/metrics", dashboardHandler.GetMetrics)
+			r.Get("/{id}/metrics/history", dashboardHandler.GetHistory)
 		})
 
 	})

@@ -8,6 +8,7 @@ import (
 	"vulcan/internal/api/handlers"
 	"vulcan/internal/api/router"
 	"vulcan/internal/config"
+	"vulcan/internal/dashboard"
 	"vulcan/internal/db"
 	"vulcan/internal/reconciler"
 	"vulcan/internal/repository"
@@ -53,8 +54,20 @@ func main() {
 
 	go workerReconciler.Start(ctx)
 
+	victoriaClient := dashboard.NewClient(
+		cfg.VictoriaMetricsURL,
+	)
+
+	dashboardService := dashboard.NewService(
+		victoriaClient,
+	)
+
+	dashboardHandler := handlers.NewDashboardHandler(
+		dashboardService,
+	)
+	
 	// Initialize router
-	r := api.NewRouter(testHandler, workerHandler)
+	r := api.NewRouter(testHandler, workerHandler, dashboardHandler)
 
 	logger.Info(
 		"starting control plane",
