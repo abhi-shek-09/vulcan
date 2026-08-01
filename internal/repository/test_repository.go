@@ -35,12 +35,19 @@ func (r *PostgresTestRepository) CreateTest(ctx context.Context, test *models.Te
 		INSERT INTO tests (
 			id,
 			name,
-    		worker_count,
 			status,
+			worker_count,
+			target_url,
+			method,
+			duration_sec,
+			rps,
+			concurrency,
 			created_at,
 			updated_at
 		)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		VALUES (
+			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11
+		)
 	` // avoiding sql injection
 
 	_, err := r.db.Exec(
@@ -48,8 +55,13 @@ func (r *PostgresTestRepository) CreateTest(ctx context.Context, test *models.Te
 		query,
 		test.ID,
 		test.Name,
-    	test.WorkerCount,
 		test.Status,
+		test.WorkerCount,
+		test.TargetURL,
+		test.Method,
+		test.DurationSec,
+		test.RPS,
+		test.Concurrency,
 		test.CreatedAt,
 		test.UpdatedAt,
 	)
@@ -66,8 +78,13 @@ func (r *PostgresTestRepository) GetTests(ctx context.Context) ([]models.Test, e
 		SELECT
 			id,
 			name,
-			worker_count,
 			status,
+			worker_count,
+			target_url,
+			method,
+			duration_sec,
+			rps,
+			concurrency,
 			created_at,
 			updated_at
 		FROM tests
@@ -88,8 +105,13 @@ func (r *PostgresTestRepository) GetTests(ctx context.Context) ([]models.Test, e
 		if err := rows.Scan(
 			&test.ID,
 			&test.Name,
-			&test.WorkerCount,
 			&test.Status,
+			&test.WorkerCount,
+			&test.TargetURL,
+			&test.Method,
+			&test.DurationSec,
+			&test.RPS,
+			&test.Concurrency,
 			&test.CreatedAt,
 			&test.UpdatedAt,
 		); err != nil {
@@ -111,8 +133,13 @@ func (r *PostgresTestRepository) GetTestByID(ctx context.Context, id string) (*m
 		SELECT
 			id,
 			name,
-			worker_count,
 			status,
+			worker_count,
+			target_url,
+			method,
+			duration_sec,
+			rps,
+			concurrency,
 			created_at,
 			updated_at
 		FROM tests
@@ -124,8 +151,13 @@ func (r *PostgresTestRepository) GetTestByID(ctx context.Context, id string) (*m
 	err := r.db.QueryRow(ctx, query, id).Scan(
 		&test.ID,
 		&test.Name,
-		&test.WorkerCount,
 		&test.Status,
+		&test.WorkerCount,
+		&test.TargetURL,
+		&test.Method,
+		&test.DurationSec,
+		&test.RPS,
+		&test.Concurrency,
 		&test.CreatedAt,
 		&test.UpdatedAt,
 	)

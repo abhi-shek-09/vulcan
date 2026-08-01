@@ -9,6 +9,7 @@ echo "======================================================="
 echo ""
 
 SERVER="http://localhost:8080"
+VICTORIA="http://localhost:8428"
 
 echo "[1] Creating test..."
 
@@ -19,7 +20,12 @@ curl -s \
 -H "Content-Type: application/json" \
 -d '{
     "name":"Phase5 Integration Test",
-    "worker_count":3
+    "worker_count":3,
+    "target_url":"https://httpbin.org/get",
+    "method":"GET",
+    "duration_sec":30,
+    "rps":100,
+    "concurrency":20
 }'
 )
 
@@ -43,48 +49,60 @@ curl -s \
 
 echo ""
 echo ""
-echo "[4] Waiting for workers to execute..."
-sleep 12
+echo "[4] Waiting for workers to publish metrics..."
+
+FOUND=false
+
+for i in {1..30}
+do
+    RESULT=$(curl -s \
+        "$VICTORIA/api/v1/export?match[]=vulcan_requests_total")
+
+    if echo "$RESULT" | grep -q "$TEST_ID"; then
+        FOUND=true
+        break
+    fi
+
+    sleep 1
+done
 
 echo ""
-echo "[5] Querying VictoriaMetrics..."
+
+if [ "$FOUND" = false ]; then
+    echo "ERROR: Metrics for test $TEST_ID were not found."
+    exit 1
+fi
+
+echo "Metrics detected."
 
 echo ""
-echo "Requests"
-
-curl -s \
-"http://localhost:8428/api/v1/query?query=vulcan_requests_total"
-
+echo "[5] Exported Metrics"
 echo ""
-echo ""
-echo "Success"
 
-curl -s \
-"http://localhost:8428/api/v1/query?query=vulcan_success_total"
-
-echo ""
-echo ""
-echo "Failures"
-
-curl -s \
-"http://localhost:8428/api/v1/query?query=vulcan_failure_total"
+curl -s "$VICTORIA/api/v1/export?match[]=vulcan_requests_total"
 
 echo ""
 echo ""
-echo "Latency"
 
-curl -s \
-"http://localhost:8428/api/v1/query?query=vulcan_avg_latency_ms"
+curl -s "$VICTORIA/api/v1/export?match[]=vulcan_success_total"
 
 echo ""
 echo ""
-echo "Workers"
 
-curl -s \
-"http://localhost:8428/api/v1/query?query=vulcan_workers"
+curl -s "$VICTORIA/api/v1/export?match[]=vulcan_failure_total"
+
+echo ""
+echo ""
+
+curl -s "$VICTORIA/api/v1/export?match[]=vulcan_avg_latency_ms"
+
+echo ""
+echo ""
+
+curl -s "$VICTORIA/api/v1/export?match[]=vulcan_workers"
 
 echo ""
 echo ""
 echo "======================================================="
-echo "Pipeline Verification Complete"
+echo "Phase 5 Integration Test Passed"
 echo "======================================================="

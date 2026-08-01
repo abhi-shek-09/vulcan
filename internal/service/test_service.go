@@ -16,8 +16,13 @@ import (
 )
 
 type CreateTestRequest struct {
-	Name        string `json:"name" validate:"required"`
-	WorkerCount int    `json:"worker_count" validate:"required,min=1"`
+    Name         string `json:"name"`
+    WorkerCount  int    `json:"worker_count"`
+    TargetURL    string `json:"target_url"`
+    Method       string `json:"method"`
+    DurationSec  int    `json:"duration_sec"`
+    RPS          int    `json:"rps"`
+    Concurrency  int    `json:"concurrency"`
 }
 
 type TestService struct {
@@ -53,15 +58,47 @@ func (s *TestService) CreateTest(
 		return nil, validation.Required("worker_count", strconv.Itoa(req.WorkerCount))
 	}
 
+	req.TargetURL = strings.TrimSpace(req.TargetURL)
+
+	if err := validation.Required("target_url", req.TargetURL); err != nil {
+		return nil, err
+	}
+
+	req.Method = strings.ToUpper(strings.TrimSpace(req.Method))
+
+	switch req.Method {
+	case "GET", "POST":
+		// valid
+	default:
+		return nil, apierrors.ErrValidation
+	}
+
+	if req.DurationSec <= 0 {
+		return nil, apierrors.ErrValidation
+	}
+
+	if req.RPS <= 0 {
+		return nil, apierrors.ErrValidation
+	}
+
+	if req.Concurrency <= 0 {
+		return nil, apierrors.ErrValidation
+	}
+
 	now := time.Now().UTC()
 
 	test := &models.Test{
-		ID:          ulid.MustNew(ulid.Timestamp(now), rand.Reader).String(),
-		Name:        req.Name,
-		WorkerCount: req.WorkerCount,
-		Status:      models.StatusCreated,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:            ulid.MustNew(ulid.Timestamp(now), rand.Reader).String(),
+		Name:          req.Name,
+		Status:        models.StatusCreated,
+		WorkerCount:   req.WorkerCount,
+		TargetURL:     strings.TrimSpace(req.TargetURL),
+		Method:        strings.ToUpper(strings.TrimSpace(req.Method)),
+		DurationSec:   req.DurationSec,
+		RPS:           req.RPS,
+		Concurrency:   req.Concurrency,
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 
 	if err := s.testRepo.CreateTest(ctx, test); err != nil {

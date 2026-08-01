@@ -17,10 +17,15 @@ const (
 )
 
 type Test struct {
-	ID          string
-	Name        string
-	WorkerCount int
-	Status      TestStatus
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	ID            string     `json:"id"`
+	Name          string     `json:"name"`
+	Status        TestStatus `json:"status"`
+	WorkerCount   int        `json:"worker_count"`
+	TargetURL     string     `json:"target_url"`
+	Method        string     `json:"method"`
+	DurationSec   int        `json:"duration_sec"`
+	RPS           int        `json:"rps"`
+	Concurrency   int        `json:"concurrency"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
 }
