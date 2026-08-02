@@ -21,7 +21,7 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
 	// Load configuration
-	cfg, err := config.Load()
+	cfg, err := config.LoadServerConfig()
 	if err != nil {
 		logger.Error("failed to load configuration", "error", err)
 		os.Exit(1)
@@ -57,7 +57,11 @@ func main() {
 	victoriaClient := dashboard.NewClient(
 		cfg.VictoriaMetricsURL,
 	)
-
+	logger.Info(
+		"victoria metrics url",
+		"url",
+		cfg.VictoriaMetricsURL,
+	)
 	dashboardService := dashboard.NewService(
 		victoriaClient,
 	)

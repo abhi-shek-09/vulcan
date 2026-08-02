@@ -4,19 +4,20 @@ import (
 	"context"
 	"log/slog"
 	"time"
+	"vulcan/internal/config"
 	"vulcan/internal/victoria"
 	"github.com/nats-io/nats.go"
 )
 
 type Aggregator struct {
 	logger *slog.Logger
-	config *Config
+	config *config.Config
 	conn *nats.Conn
 	store *Store
 	writer *victoria.Writer
 }
 
-func New(cfg *Config, logger *slog.Logger) (*Aggregator, error) {
+func New(cfg *config.Config, logger *slog.Logger) (*Aggregator, error) {
 	nc, err := nats.Connect(cfg.NATSURL)
 	if err != nil {
 		return nil, err
@@ -27,7 +28,7 @@ func New(cfg *Config, logger *slog.Logger) (*Aggregator, error) {
 		config: cfg,
 		conn:   nc,
 		store: NewStore(),
-		writer: victoria.New("http://localhost:8428"),
+		writer: victoria.New(cfg.VictoriaMetricsURL),
 	}, nil
 }
 

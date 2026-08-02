@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"log"
 	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
+	"vulcan/internal/config"
 	"vulcan/internal/metrics"
 	"vulcan/internal/worker"
 )
@@ -32,10 +34,6 @@ func main() {
 		Level: level,
 	}
 
-	// logger := slog.New(
-	// 	slog.NewTextHandler(os.Stdout, opts),
-	// )
-	
 	logger := slog.New(
 		slog.NewTextHandler(os.Stdout, opts),
 	).With(
@@ -50,7 +48,13 @@ func main() {
 	)
 
 	defer cancel()
-	publisher, err := metrics.NewPublisher("nats://localhost:4222")
+
+	envCfg, err := config.LoadWorkerConfig()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	publisher, err := metrics.NewPublisher(envCfg.NATSURL)
 	if err != nil {
 		logger.Error(
 			"failed to connect to NATS",

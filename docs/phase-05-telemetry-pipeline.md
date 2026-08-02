@@ -1,131 +1,196 @@
 # Vulcan Phase 5
-# Distributed Telemetry Pipeline
+# Distributed Telemetry Pipeline (Updated)
 
-Author: Abhishek Murthy
+**Author:** Abhishek Murthy
 
 ---
 
 # Overview
 
-Phase 5 introduces Vulcan's distributed telemetry pipeline.
+Phase 5 transforms Vulcan from a distributed orchestration platform into a distributed telemetry platform.
 
-Previous phases focused on orchestration:
+Previous phases established the foundation required to execute distributed load tests:
 
 - Worker registration
-- Scheduling
+- Worker heartbeats
+- Distributed scheduling
+- Worker reservation
 - Assignment lifecycle
-- Heartbeats
-- Distributed execution
+- Test orchestration
 
-At the end of Phase 4, workers could execute assigned tests but did not produce meaningful telemetry.
+At the conclusion of Phase 4, workers were capable of receiving assignments and executing them, but execution was only simulated. No meaningful telemetry was produced, aggregated or persisted.
 
-Execution consisted only of a simulated sleep.
+Phase 5 introduces Vulcan's complete telemetry pipeline.
 
-```
-Assignment
+Instead of workers simply completing assigned jobs, every worker now executes a configurable load generation loop, continuously produces execution metrics, aggregates them locally, and publishes summarized telemetry through NATS. A dedicated Metrics Aggregator consumes telemetry from every worker, computes global statistics, and persists those metrics into VictoriaMetrics for long-term storage and visualization.
 
-↓
+The Control Plane intentionally remains responsible only for orchestration.
 
-Sleep(10s)
-
-↓
-
-Complete
-```
-
-This phase replaces that model with a distributed metrics pipeline.
-
-Workers now simulate request execution, aggregate metrics locally, publish telemetry to NATS, where a dedicated Aggregator service consumes and merges metrics before storing them inside VictoriaMetrics.
-
-The Control Plane continues to remain orchestration-only.
-
-It never processes high-frequency metrics.
+It never processes high-frequency metrics and never becomes part of the telemetry data path.
 
 ---
 
 # Objectives
 
-The objectives of this phase were:
+The primary objectives of Phase 5 were:
 
-- Introduce worker-side telemetry collection
-- Aggregate metrics locally
-- Publish aggregated buckets instead of individual requests
-- Introduce NATS messaging
-- Build a Metrics Aggregator service
-- Aggregate metrics globally
-- Persist metrics inside VictoriaMetrics
-- Verify end-to-end telemetry flow
+- Introduce configurable load test definitions
+- Extend the Test model with execution parameters
+- Build a worker-side execution engine
+- Collect execution metrics locally
+- Aggregate metrics into one-second buckets
+- Publish MetricBuckets through NATS
+- Build a dedicated Metrics Aggregator
+- Merge telemetry across all participating workers
+- Persist aggregated metrics into VictoriaMetrics
+- Validate the complete telemetry pipeline end-to-end
 
 ---
 
-# Final Architecture
+# Phase 5 Architecture
 
-```
-                     +----------------------+
-                     |   Control Plane      |
-                     +----------+-----------+
-                                |
-                        Scheduler / Assignments
-                                |
-       --------------------------------------------------
-       |                     |                         |
-       ▼                     ▼                         ▼
+```text
+                         +----------------------+
+                         |    Control Plane     |
+                         +----------+-----------+
+                                    |
+                          Scheduler / Assignments
+                                    |
+      ---------------------------------------------------------------
+      |                         |                         |
+      ▼                         ▼                         ▼
 
-   Worker Runtime      Worker Runtime           Worker Runtime
+  Worker Runtime          Worker Runtime          Worker Runtime
 
-       │                     │                         │
-       ▼                     ▼                         ▼
+      │                         │                         │
+      ▼                         ▼                         ▼
 
- Local Collector      Local Collector         Local Collector
+ Execution Engine        Execution Engine        Execution Engine
 
-       │                     │                         │
-       └────────────── Publish MetricBucket ───────────┘
-                              │
-                              ▼
-                            NATS
-                              │
-                              ▼
+      │                         │                         │
+      ▼                         ▼                         ▼
+
+ Local Collector        Local Collector         Local Collector
+
+      │                         │                         │
+      └────────────── Publish MetricBucket ───────────────┘
+                               │
+                               ▼
+                             NATS
+                               │
+                               ▼
                     Metrics Aggregator
-                              │
-                              ▼
+                               │
+                               ▼
                      VictoriaMetrics
-                              │
-                              ▼
-                           Grafana
+                               │
+                               ▼
+                            Grafana
 ```
+
+The telemetry pipeline is completely independent of the Control Plane after a test begins.
+
+Once workers receive assignments, all execution metrics flow directly from workers to the Aggregator through NATS.
 
 ---
 
-# Why NATS?
+# Separation of Responsibilities
 
-If every worker wrote directly into PostgreSQL:
+The architecture deliberately separates orchestration from telemetry.
 
-```
-100 Workers
+## Control Plane
+
+Responsible for:
+
+- Creating tests
+- Scheduling workers
+- Reserving workers
+- Starting tests
+- Assignment lifecycle
+- Worker heartbeats
+- Metadata persistence
+
+The Control Plane does **not** process request metrics.
+
+---
+
+## Worker
+
+Responsible for:
+
+- Executing assigned load tests
+- Generating request metrics
+- Aggregating telemetry locally
+- Publishing MetricBuckets to NATS
+
+Workers never communicate directly with VictoriaMetrics.
+
+---
+
+## Metrics Aggregator
+
+Responsible for:
+
+- Receiving MetricBuckets
+- Merging worker telemetry
+- Computing global statistics
+- Persisting metrics into VictoriaMetrics
+
+The Aggregator has no knowledge of scheduling or worker assignment.
+
+---
+
+## VictoriaMetrics
+
+Responsible for:
+
+- Time-series storage
+- Historical metrics
+- Prometheus-compatible querying
+- Grafana integration
+
+---
+
+# Why This Architecture?
+
+Without a dedicated telemetry pipeline, every worker would continuously write metrics directly to the Control Plane or PostgreSQL.
+
+For example:
+
+```text
+300 Workers
 
 ↓
 
-100 Inserts / second
+100 Requests / Second
+
+↓
+
+30,000 Metrics Every Second
 
 ↓
 
 Database Bottleneck
 ```
 
-The Control Plane would become responsible for processing telemetry instead of orchestration.
+The Control Plane would become responsible for processing telemetry instead of coordinating distributed execution.
 
-Instead:
+Instead, Vulcan follows a publish-subscribe architecture:
 
-```
+```text
 Worker
 
 ↓
 
-Aggregate
+Collector
 
 ↓
 
-Publish
+MetricBucket
+
+↓
+
+NATS
 
 ↓
 
@@ -136,401 +201,110 @@ Aggregator
 VictoriaMetrics
 ```
 
-Benefits:
+Advantages include:
 
-- loose coupling
-- asynchronous processing
-- scalable
-- workers never block on database writes
-- Control Plane remains lightweight
+- Loose coupling
+- Horizontal scalability
+- Asynchronous communication
+- Reduced database pressure
+- Lower network overhead
+- Simpler Control Plane
+- Independent service scaling
+
+---
+
+# Configurable Load Tests
+
+Unlike previous phases, tests are no longer simple metadata records.
+
+Each test now contains enough information for workers to execute a configurable workload.
+
+The Test model now includes:
+
+```go
+type Test struct {
+    ID            string
+    Name          string
+    Status        TestStatus
+
+    WorkerCount   int
+
+    TargetURL     string
+    Method        string
+
+    DurationSec   int
+    RPS           int
+    Concurrency   int
+
+    CreatedAt     time.Time
+    UpdatedAt     time.Time
+}
+```
+
+These fields describe how a worker should execute the assigned workload.
+
+Current parameters include:
+
+| Field | Purpose |
+|--------|----------|
+| TargetURL | Target endpoint |
+| Method | HTTP method |
+| DurationSec | Test duration |
+| RPS | Desired request rate |
+| Concurrency | Concurrent execution level |
+
+Although request execution remains simulated in Phase 5, the execution engine now operates using realistic load-test parameters rather than fixed-duration sleeps.
+
+This design allows Phase 6 to replace only the request generation component while leaving the surrounding telemetry pipeline unchanged.
 
 ---
 
 # Worker Execution Flow
 
-Worker execution is now:
+Worker execution has been redesigned.
 
-```
+Previous implementation:
+
+```text
 Receive Assignment
 
 ↓
 
-Generate Simulated Requests
-
-↓
-
-Measure
-
-• Latency
-• Success
-• Failure
-• Bytes Sent
-• Bytes Received
-
-↓
-
-Collector
-
-↓
-
-Aggregate 1-second bucket
-
-↓
-
-Publish MetricBucket
-
-↓
-
-Repeat
+Sleep(10 Seconds)
 
 ↓
 
 Complete Assignment
 ```
 
-The worker publishes one MetricBucket every second.
+Current implementation:
 
-No individual request is transmitted.
-
----
-
-# MetricBucket
-
-The telemetry pipeline revolves around MetricBucket.
-
-```go
-type MetricBucket struct {
-    TestID string
-    WorkerID string
-
-    WindowStart time.Time
-    WindowEnd time.Time
-
-    Requests int64
-    Successes int64
-    Failures int64
-
-    BytesSent int64
-    BytesReceived int64
-
-    AvgLatencyMs float64
-    MaxLatencyMs float64
-}
-```
-
-Each bucket represents one aggregation window.
-
-The bucket contains summarized telemetry instead of raw request events.
-
----
-
-# Why Aggregate Locally?
-
-Suppose one worker generates:
-
-```
-100 requests/sec
-```
-
-Sending every request individually would produce:
-
-```
-100 messages/sec
-```
-
-Across 500 workers:
-
-```
-50,000 messages/sec
-```
-
-Instead the worker aggregates locally:
-
-```
-100 requests
+```text
+Receive Assignment
 
 ↓
 
-1 MetricBucket
+Load Test Configuration
 
 ↓
 
-1 NATS Message
-```
+Start Execution Loop
 
-Result:
+↓
 
-Massive reduction in network traffic.
+Generate Request Metrics
 
----
+↓
 
-# Collector
-
-Each executing worker owns a Collector.
-
-Responsibilities:
-
-- count requests
-- count successes
-- count failures
-- sum bytes sent
-- sum bytes received
-- accumulate latency
-- compute average latency
-- compute maximum latency
-
-Every second:
-
-```
 Collector
 
 ↓
 
-Snapshot()
+Aggregate One-Second Window
 
 ↓
 
-MetricBucket
-
-↓
-
-Reset()
-
-↓
-
-Continue
-```
-
----
-
-# Simulated Request Generation
-
-Actual HTTP load generation is intentionally deferred to Phase 6.
-
-For this phase each worker generates simulated requests.
-
-Each request randomly produces:
-
-- latency
-- success/failure
-- bytes sent
-- bytes received
-
-The Collector receives these values exactly as it will in Phase 6.
-
-Only the source of telemetry changes later.
-
----
-
-# NATS
-
-Workers publish to:
-
-```
-metrics.test.<testID>
-```
-
-Example:
-
-```
-metrics.test.01KYWSAYJMA0E788Z12XHNJMCG
-```
-
-The Aggregator subscribes using:
-
-```
-metrics.test.*
-```
-
-This allows one Aggregator to process telemetry from every active test.
-
----
-
-# Publisher
-
-The worker owns a Publisher responsible for:
-
-```
-MetricBucket
-
-↓
-
-JSON Marshal
-
-↓
-
-NATS Publish
-```
-
-Workers are unaware of aggregation logic.
-
-They simply publish buckets.
-
----
-
-# Metrics Aggregator
-
-A dedicated Aggregator service subscribes to NATS.
-
-Responsibilities:
-
-- receive MetricBuckets
-- merge buckets
-- compute global metrics
-- write to VictoriaMetrics
-
-It has no HTTP API.
-
-It communicates only through NATS.
-
----
-
-# Global Aggregation
-
-The Aggregator merges telemetry from every worker participating in a test.
-
-Example:
-
-Worker A
-
-```
-Requests = 100
-```
-
-Worker B
-
-```
-Requests = 100
-```
-
-Worker C
-
-```
-Requests = 100
-```
-
-Merged result:
-
-```
-Requests = 300
-```
-
-Likewise:
-
-- Successes
-- Failures
-- Bytes
-- Latency
-
-are all merged into a global view.
-
----
-
-# Snapshot-Based Reporting
-
-The Aggregator maintains mutable aggregation state internally.
-
-Every reporting interval:
-
-1. Metrics are copied into a snapshot.
-2. Aggregation state is reset.
-3. Locks are released.
-4. Logging and VictoriaMetrics writes occur outside the critical section.
-
-Advantages:
-
-- minimal lock contention
-- workers continue publishing while metrics are written
-- scalable with larger worker counts
-
-This avoids blocking incoming telemetry during network I/O.
-
----
-
-# VictoriaMetrics Integration
-
-The Metrics Aggregator persists aggregated telemetry inside VictoriaMetrics.
-
-VictoriaMetrics was chosen because:
-
-- Prometheus-compatible API
-- Extremely high ingestion rate
-- Low memory usage
-- Native Grafana integration
-- Suitable for high-cardinality telemetry
-
-Unlike PostgreSQL, VictoriaMetrics is designed specifically for time-series data.
-
----
-
-# Metrics Written
-
-The Aggregator currently writes the following metrics.
-
-```
-vulcan_requests_total
-
-vulcan_success_total
-
-vulcan_failure_total
-
-vulcan_workers
-
-vulcan_avg_latency_ms
-
-vulcan_max_latency_ms
-
-vulcan_bytes_sent_total
-
-vulcan_bytes_received_total
-```
-
-Each metric is tagged with:
-
-```
-test_id
-```
-
-Example:
-
-```
-vulcan_requests_total{test_id="01KYWSAYJMA0E788Z12XHNJMCG"} 300
-```
-
-This allows metrics belonging to multiple concurrent load tests to coexist safely.
-
----
-
-# End-to-End Execution Flow
-
-Complete telemetry pipeline:
-
-```
-Create Test
-
-↓
-
-Reserve Workers
-
-↓
-
-Start Test
-
-↓
-
-Workers Receive Assignment
-
-↓
-
-Worker Executes
-
-↓
-
-Collector Aggregates
-
-↓
-
-MetricBucket
+Create MetricBucket
 
 ↓
 
@@ -538,189 +312,392 @@ Publish to NATS
 
 ↓
 
-Aggregator Receives Bucket
+Repeat Until Duration Ends
 
 ↓
 
-Merge Global State
+Complete Assignment
+```
+
+Execution now continues for the configured test duration.
+
+Every execution cycle contributes telemetry to the Collector.
+
+The worker publishes summarized telemetry every second while the assignment is active.
+
+---
+
+# Simulated Execution Engine
+
+Actual HTTP requests are intentionally deferred to Phase 6.
+
+Instead, workers generate realistic execution statistics including:
+
+- Request count
+- Successes
+- Failures
+- Request latency
+- Maximum latency
+- Bytes sent
+- Bytes received
+
+These values are generated using configurable distributions so that the telemetry pipeline can be validated without introducing network variability.
+
+The remainder of the telemetry pipeline treats simulated metrics exactly the same as real request metrics.
+
+This allows the Collector, Aggregator and VictoriaMetrics integration to be fully developed and validated before implementing the production HTTP engine.
+
+---
+
+# Local Metric Collection
+
+Each worker owns an independent Collector.
+
+The Collector is responsible for accumulating execution statistics over a fixed one-second reporting window.
+
+Rather than publishing every request individually, the Collector summarizes all requests generated during the window into a single MetricBucket.
+
+Benefits include:
+
+- Reduced serialization overhead
+- Lower network traffic
+- Lower CPU utilization
+- Simpler aggregation
+- Better scalability
+
+The Collector therefore acts as the boundary between high-frequency request generation and low-frequency telemetry publication.
+
+---
+
+# One-Second Aggregation Window
+
+Each worker continuously performs the following cycle:
+
+```text
+Generate Request Metrics
 
 ↓
 
-Compute Global Metrics
+Collector Records Metrics
 
 ↓
 
-Write to VictoriaMetrics
+One Second Elapses
 
 ↓
 
-Grafana / Query API
+Collector Snapshot
+
+↓
+
+MetricBucket Created
+
+↓
+
+Collector Reset
+
+↓
+
+Continue Execution
 ```
 
-The Control Plane is never involved after assigning work.
+The reporting window is fixed at one second.
+
+Each published MetricBucket therefore represents an aggregate view of all requests executed during that interval rather than individual request events.
 
 ---
 
-# Manual Testing Procedure
+# MetricBucket
 
-## Step 1
+The MetricBucket is the fundamental telemetry unit within Vulcan.
 
-Start PostgreSQL.
+```go
+type MetricBucket struct {
+    TestID string
+    WorkerID string
+
+    WindowStart time.Time
+    WindowEnd   time.Time
+
+    Requests int64
+
+    Successes int64
+    Failures  int64
+
+    BytesSent     int64
+    BytesReceived int64
+
+    AvgLatencyMs float64
+    MaxLatencyMs float64
+}
+```
+
+Every bucket represents exactly one aggregation window produced by a single worker.
+
+The Aggregator receives these buckets and merges them into global test metrics.
 
 ---
 
-## Step 2
+# Complete Runtime Sequence
 
-Start NATS.
-
-Example:
+Once all services are running, the complete telemetry pipeline works as follows.
 
 ```
-docker run -p 4222:4222 nats
+                Control Plane
+                      │
+          Create / Start Test
+                      │
+                      ▼
+          Worker Assignments Sent
+                      │
+      ┌───────────────┼───────────────┐
+      ▼               ▼               ▼
+   Worker 1        Worker 2        Worker 3
+      │               │               │
+      │ Generate HTTP Requests        │
+      │               │               │
+      └────── Aggregate 1-second Metrics ──────┘
+                      │
+                      ▼
+              Publish MetricBucket
+                  (NATS Subject)
+                      │
+                      ▼
+                    NATS
+                      │
+                      ▼
+                 Aggregator
+                      │
+        Merge Worker Buckets Per Test
+                      │
+                      ▼
+          Compute Global Statistics
+                      │
+                      ▼
+         Convert to Prometheus Format
+                      │
+                      ▼
+            VictoriaMetrics Import API
+                      │
+                      ▼
+             Metrics Stored Persistently
+                      │
+                      ▼
+      Queryable by Grafana / PromQL APIs
 ```
 
 ---
 
-## Step 3
+# Step 1 — Test Creation
 
-Start VictoriaMetrics.
-
-```
-docker run \
--p 8428:8428 \
-victoriametrics/victoria-metrics
-```
-
----
-
-## Step 4
-
-Start Control Plane.
-
-```
-make run-server
-```
-
----
-
-## Step 5
-
-Start Aggregator.
-
-```
-make run-aggregator
-```
-
-Expected:
-
-```
-Aggregator connected to NATS.
-```
-
----
-
-## Step 6
-
-Start three workers.
-
-Example:
-
-Terminal 1
-
-```
-WORKER_HOSTNAME=worker-1 make run-worker
-```
-
-Terminal 2
-
-```
-WORKER_HOSTNAME=worker-2 make run-worker
-```
-
-Terminal 3
-
-```
-WORKER_HOSTNAME=worker-3 make run-worker
-```
-
-Workers should register successfully.
-
----
-
-## Step 7
-
-Create a test.
-
-Example:
+The Control Plane receives:
 
 ```
 POST /api/v1/tests
+```
+
+Example request:
+
+```json
+{
+    "name":"HTTP Test",
+    "worker_count":3,
+    "target_url":"https://httpbin.org/get",
+    "method":"GET",
+    "duration_sec":30,
+    "rps":100,
+    "concurrency":20
+}
+```
+
+The database stores:
+
+- metadata
+- target URL
+- duration
+- RPS
+- concurrency
+- timestamps
+
+No workers begin execution yet.
+
+---
+
+# Step 2 — Start Test
+
+Calling
+
+```
+POST /api/v1/tests/{id}/start
+```
+
+causes the scheduler to:
+
+- reserve idle workers
+- assign workers
+- update worker status
+- update test status
+
+The API returns
+
+```json
+{
+    "test_id":"...",
+    "status":"RUNNING",
+    "workers":[
+        {
+            "id":"...",
+            "hostname":"worker-1"
+        }
+    ]
+}
+```
+
+---
+
+# Step 3 — Worker Execution
+
+Each worker receives an assignment.
+
+Example:
+
+```
+Target:
+https://httpbin.org/get
+
+Method:
+GET
+
+Duration:
+30 sec
+
+RPS:
+100
+
+Concurrency:
+20
+```
+
+The worker begins generating HTTP traffic.
+
+---
+
+# Step 4 — Local Aggregation
+
+Workers never publish every request.
+
+Instead they aggregate one-second windows.
+
+Example:
+
+```
+Requests:
+100
+
+Successes:
+96
+
+Failures:
+4
+
+Average Latency:
+103 ms
+
+Max Latency:
+198 ms
+
+Bytes Sent:
+100 KB
+
+Bytes Received:
+310 KB
+```
+
+These values become one `MetricBucket`.
+
+---
+
+# Step 5 — NATS Publish
+
+Each second the worker publishes
+
+```
+metrics.test.<testID>
 ```
 
 Payload:
 
 ```json
 {
-    "name":"Telemetry Test",
-    "worker_count":3
+    "test_id":"...",
+    "worker_id":"...",
+    "requests":100,
+    "successes":96,
+    "failures":4,
+    "avg_latency_ms":103,
+    "max_latency_ms":198
 }
 ```
 
-Record the returned test ID.
+Thousands of requests become a single compact telemetry message.
 
 ---
 
-## Step 8
+# Step 6 — Aggregator Subscription
 
-Start the test.
-
-```
-POST /api/v1/tests/{id}/start
-```
-
-Workers should transition:
+The Aggregator subscribes to
 
 ```
-IDLE
-
-↓
-
-RUNNING
+metrics.test.*
 ```
 
----
+Every incoming bucket is unmarshalled.
 
-## Step 9
+The Store merges buckets into one shared window.
 
-Observe Worker Logs
-
-Workers should continuously log:
+Instead of
 
 ```
-metric bucket generated
-
-↓
-
-metric bucket published
+Worker 1
+Worker 2
+Worker 3
 ```
 
-Example:
+the Aggregator builds
 
 ```
-requests=100
-
-successes=97
-
-failures=3
+Global Test Window
 ```
 
 ---
 
-## Step 10
+# Step 7 — Global Metric Computation
 
-Observe Aggregator Logs
+Every second the Aggregator computes:
 
-Example:
+```
+Requests
+
+Successes
+
+Failures
+
+Average Latency
+
+Maximum Latency
+
+Bytes Sent
+
+Bytes Received
+
+Worker Count
+
+Success Rate
+
+RPS
+```
+
+Example log:
 
 ```
 global metrics
@@ -729,243 +706,152 @@ workers=3
 
 requests=300
 
-success_rate=96%
+successes=287
 
-avg_latency_ms=104
+failures=13
 
-bytes_sent=301122
+success_rate=95.67
 
-bytes_received=901553
+avg_latency_ms=100.3
+
+max_latency_ms=199
 ```
 
 ---
 
-## Step 11
+# Step 8 — Prometheus Payload Creation
 
-Verify VictoriaMetrics
+The Aggregator converts snapshots into Prometheus exposition format.
 
-Run:
+Example:
 
+```text
+vulcan_requests_total{test_id="01ABC"} 300
+vulcan_success_total{test_id="01ABC"} 287
+vulcan_failure_total{test_id="01ABC"} 13
+vulcan_workers{test_id="01ABC"} 3
+vulcan_avg_latency_ms{test_id="01ABC"} 100.31
+vulcan_max_latency_ms{test_id="01ABC"} 199
+vulcan_bytes_sent_total{test_id="01ABC"} 304459
+vulcan_bytes_received_total{test_id="01ABC"} 919694
 ```
-curl \
-"http://localhost:8428/api/v1/query?query=vulcan_requests_total"
-```
-
-Expected:
-
-```json
-{
-  "status":"success",
-  "data":{
-      ...
-  }
-}
-```
-
-This confirms successful persistence.
 
 ---
 
-# Expected Behaviour
+# Step 9 — VictoriaMetrics Storage
 
-Three workers should produce approximately:
+The payload is POSTed to
 
 ```
-Worker 1
+POST /api/v1/import/prometheus
+```
 
-100 req/s
+VictoriaMetrics parses the metrics and stores them as time series.
 
-+
+Each metric is tagged with
 
-Worker 2
+```
+test_id
+```
 
-100 req/s
+allowing multiple tests to coexist.
 
-+
+---
 
-Worker 3
+# Step 10 — Query Layer
 
-100 req/s
+Metrics can now be queried using the Prometheus API.
+
+Examples:
+
+Latest request count
+
+```
+vulcan_requests_total
+```
+
+Failures
+
+```
+vulcan_failure_total
+```
+
+Average latency
+
+```
+vulcan_avg_latency_ms
+```
+
+Workers
+
+```
+vulcan_workers
+```
+
+Historical export
+
+```
+/api/v1/export?match[]=vulcan_requests_total
+```
+
+---
+
+# Typical Runtime Timeline
+
+```
+Time 0
+Create Test
 
 ↓
 
-Global
+Start Test
 
-≈300 req/s
+↓
+
+Workers Assigned
+
+↓
+
+Workers Generate Requests
+
+↓
+
+Workers Aggregate Metrics
+
+↓
+
+Workers Publish MetricBuckets
+
+↓
+
+Aggregator Merges Buckets
+
+↓
+
+Aggregator Computes Global Snapshot
+
+↓
+
+VictoriaMetrics Stores Snapshot
+
+↓
+
+Grafana Queries Metrics
 ```
 
-Minor variations are expected because reporting windows are not perfectly synchronized.
-
 ---
 
-# Locking Strategy
-
-The Aggregator minimizes contention by:
-
-```
-Lock
-
-↓
-
-Copy Metrics
-
-↓
-
-Reset Window
-
-↓
-
-Unlock
-
-↓
-
-Logger
-
-↓
-
-VictoriaMetrics Write
-```
-
-HTTP requests are intentionally performed outside critical sections.
-
-This allows workers to continue publishing while metrics are being persisted.
-
----
-
-# Design Decisions
-
-## Workers Never Write to PostgreSQL
-
-Reason:
-
-Telemetry volume is significantly higher than orchestration traffic.
-
-Keeping telemetry out of PostgreSQL prevents database contention.
-
----
-
-## Bucket-Based Telemetry
-
-Workers publish one summary every second.
-
-Advantages:
-
-- Reduced network traffic
-- Lower CPU usage
-- Lower serialization overhead
-- Easier aggregation
-
----
-
-## NATS Instead of Direct Calls
-
-NATS provides:
-
-- asynchronous messaging
-- loose coupling
-- scalability
-- fault isolation
-
-Workers remain unaware of downstream consumers.
-
----
-
-## Dedicated Aggregator
-
-Aggregation is isolated from the Control Plane.
-
-Advantages:
-
-- independent scaling
-- independent deployment
-- simpler Control Plane
-- future horizontal scaling
-
----
-
-## VictoriaMetrics
-
-Chosen because it is purpose-built for time-series storage.
-
-Advantages:
-
-- efficient ingestion
-- Prometheus compatibility
-- Grafana integration
-- low operational complexity
-
----
-
-# Known Limitations
-
-Current implementation intentionally simulates request execution.
-
-Workers do not yet:
-
-- execute real HTTP requests
-- support configurable request rates
-- measure network latency
-- support request payloads
-- reuse HTTP clients
-- handle retries
-
-These features are introduced in Phase 6.
-
----
-
-# Future Work
-
-Phase 6 replaces simulated requests with a real HTTP engine.
-
-Instead of generating random metrics:
-
-```
-Simulated Request
-
-↓
-
-Collector
-```
-
-Workers will execute:
-
-```
-HTTP Request
-
-↓
-
-Measure
-
-↓
-
-Collector
-```
-
-The telemetry pipeline itself remains unchanged.
-
-Only the data source changes.
-
-This separation was an intentional design goal of Phase 5.
-
----
-
-# Phase Summary
-
-Phase 5 successfully introduces Vulcan's distributed telemetry pipeline.
-
-Implemented components include:
-
-- Worker-side telemetry collection
-- Local metric aggregation
-- MetricBucket model
-- NATS publisher
-- NATS subscriber
-- Metrics Aggregator
-- Global aggregation
-- VictoriaMetrics integration
-- Multi-worker telemetry validation
-- End-to-end verification
-
-The project now supports distributed metric collection and storage while keeping the Control Plane focused exclusively on orchestration.
-
-This telemetry architecture becomes the foundation for real HTTP load generation, dashboards, and production-scale deployments in subsequent phases.
+# Pipeline Characteristics
+
+The implemented telemetry pipeline provides:
+
+- Distributed metric collection
+- One-second aggregation windows
+- Minimal network overhead
+- Event-driven communication using NATS
+- Centralized aggregation
+- Prometheus-compatible metric formatting
+- Time-series persistence in VictoriaMetrics
+- Query support through standard Prometheus APIs
+- Separation between execution workers and storage backend
+- Scalability by adding more workers without changing the aggregation model

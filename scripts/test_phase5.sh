@@ -19,7 +19,7 @@ curl -s \
 "$SERVER/api/v1/tests" \
 -H "Content-Type: application/json" \
 -d '{
-    "name":"Phase5 Integration Test",
+    "name":"Phase6 Container Test",
     "worker_count":3,
     "target_url":"https://httpbin.org/get",
     "method":"GET",

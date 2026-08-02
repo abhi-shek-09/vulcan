@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"vulcan/internal/aggregator"
+	"vulcan/internal/config"
 )
 
 func main() {
@@ -22,7 +23,10 @@ func main() {
 		),
 	)
 
-	cfg := aggregator.DefaultConfig()
+	cfg, err := config.LoadAggregatorConfig()
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	agg, err := aggregator.New(cfg, logger)
 	if err != nil {
