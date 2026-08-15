@@ -6,10 +6,10 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"encoding/json"
 	"vulcan/internal/api/apierrors"
 	"vulcan/internal/api/response"
 	"vulcan/internal/models"
-	"encoding/json"
 	"vulcan/internal/service"
 )
 

@@ -2,22 +2,34 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"time"
 
 	"vulcan/internal/controlplane"
+	"vulcan/internal/execution"
 	"vulcan/internal/metrics"
 	"vulcan/internal/models"
 )
 
+// ErrAssignmentStopped is returned internally by execute() when it detects,
+// via polling the control plane, that the test was stopped externally
+// (STOP during execution). It is handled distinctly from real execution
+// failures: the control plane has already reconciled the assignment/worker
+// state via StopTest, so the worker must not also call FailAssignment or
+// CompleteAssignment for it.
+var ErrAssignmentStopped = errors.New("assignment stopped by control plane")
+
 type Worker struct {
-	config *Config
-	logger *slog.Logger
-	client *controlplane.Client
-	publisher *metrics.Publisher
-	id       string
-	hostname string
-	status   models.WorkerStatus
-	version  string
+	config          *Config
+	logger          *slog.Logger
+	client          *controlplane.Client
+	publisher       *metrics.Publisher
+	id              string
+	hostname        string
+	status          models.WorkerStatus
+	version         string
+	executionEngine execution.Engine
 }
 
 func New(
@@ -26,15 +38,19 @@ func New(
 	publisher *metrics.Publisher,
 ) *Worker {
 
+	engine := execution.NewEngine(
+		execution.NewScheduler(),
+		execution.NewHTTPExecutor(30*time.Second),
+	)
 	return &Worker{
-		config:    config,
-		logger:    logger,
-		client:    controlplane.New(config.ControlPlane.URL),
-		publisher: publisher,
-
-		hostname: config.Worker.Hostname,
-		version:  config.Worker.Version,
-		status:   models.WorkerStatusIdle,
+		config:          config,
+		logger:          logger,
+		client:          controlplane.New(config.ControlPlane.URL),
+		publisher:       publisher,
+		hostname:        config.Worker.Hostname,
+		version:         config.Worker.Version,
+		status:          models.WorkerStatusIdle,
+		executionEngine: engine,
 	}
 }
 
@@ -136,10 +152,40 @@ func (w *Worker) processAssignment(
 		"test_id", assignment.TestID,
 	)
 
-	if err := w.execute(
-		ctx,
-		assignment,
-	); err != nil {
+	// Execute the assignment and handle failures gracefully.
+	if err := w.execute(ctx, assignment); err != nil {
+
+		// The test was stopped from the control plane while we were
+		// executing it. The control plane already released the worker
+		// and completed the assignment row as part of StopTest, so we
+		// must not call Fail/Complete again -- just go back to IDLE.
+		if errors.Is(err, ErrAssignmentStopped) {
+			w.logger.Info(
+				"assignment stopped externally",
+				"test_id", assignment.TestID,
+			)
+
+			w.status = models.WorkerStatusIdle
+			return nil
+		}
+
+		// Only mark as Failed if the execution error wasn't caused by a
+		// parent context cancellation (i.e. the worker itself is
+		// shutting down, not the assignment failing).
+		if ctx.Err() == nil {
+			if failErr := w.client.FailAssignment(
+				context.Background(),
+				w.id,
+				assignment.TestID,
+			); failErr != nil {
+				w.logger.Error(
+					"failed to mark assignment failed",
+					"test_id", assignment.TestID,
+					"error", failErr,
+				)
+			}
+		}
+
 		w.status = models.WorkerStatusIdle
 		return err
 	}
@@ -149,6 +195,7 @@ func (w *Worker) processAssignment(
 		w.id,
 		assignment.TestID,
 	); err != nil {
+		w.status = models.WorkerStatusIdle
 		return err
 	}
 

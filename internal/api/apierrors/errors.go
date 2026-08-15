@@ -14,4 +14,7 @@ var (
 	ErrInsufficientWorkers = errors.New("insufficient workers available")
 	ErrInvalidTestState = errors.New("invalid test state")
 	ErrAssignmentNotFound = errors.New("assignment not found")
+	ErrNilScheduler = errors.New("scheduler is nil")
+	ErrNilExecutor  = errors.New("executor is nil")
+	ErrAssignmentStopped = errors.New("assignment stopped")
 )

@@ -17,7 +17,19 @@ type TestRepository interface {
 	GetTests(ctx context.Context) ([]models.Test, error)
 	GetTestByID(ctx context.Context, id string) (*models.Test, error)
 	UpdateStatus(ctx context.Context, id string, status models.TestStatus) error
-	
+
+	// TryTransitionStatus atomically moves a test from `from` to `to` and
+	// reports whether the transition actually happened (via the DB row
+	// affected count). Because the WHERE clause checks the current status
+	// in the same statement as the UPDATE, this is safe under concurrent
+	// callers -- exactly one caller will succeed even if two requests race
+	// to start/stop the same test at the same time.
+	TryTransitionStatus(
+		ctx context.Context,
+		id string,
+		from models.TestStatus,
+		to models.TestStatus,
+	) (bool, error)
 }
 
 type PostgresTestRepository struct {
@@ -200,3 +212,32 @@ func (r *PostgresTestRepository) UpdateStatus(ctx context.Context, id string, st
 	return nil
 }
 
+func (r *PostgresTestRepository) TryTransitionStatus(
+	ctx context.Context,
+	id string,
+	from models.TestStatus,
+	to models.TestStatus,
+) (bool, error) {
+	const query = `
+		UPDATE tests
+		SET
+			status = $3,
+			updated_at = NOW()
+		WHERE id = $1
+			AND status = $2
+	`
+
+	tag, err := r.db.Exec(
+		ctx,
+		query,
+		id,
+		from,
+		to,
+	)
+
+	if err != nil {
+		return false, fmt.Errorf("transition test status: %w", err)
+	}
+
+	return tag.RowsAffected() > 0, nil
+}

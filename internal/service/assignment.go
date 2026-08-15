@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 
-	"vulcan/internal/models"
+	"vulcan/internal/repository"
 )
 
-func (ws *WorkerService) GetReservedAssignment(	ctx context.Context, workerID string) (*models.Assignment, error) {
+func (ws *WorkerService) GetReservedAssignment(
+	ctx context.Context,
+	workerID string,
+) (*repository.AssignmentDetails, error) {
 
 	assignment, err := ws.repo.GetReservedAssignment(
 		ctx,

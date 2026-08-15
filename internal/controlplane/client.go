@@ -41,11 +41,30 @@ type RegisterWorkerResponse struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-
 type AssignmentResponse struct {
-	Assigned bool `json:"assigned"`
-	TestID string `json:"test_id,omitempty"`
-	Status string `json:"status,omitempty"`
+	Assigned    bool   `json:"assigned"`
+	TestID      string `json:"test_id,omitempty"`
+	Status      string `json:"status,omitempty"`
+	TargetURL   string `json:"target_url,omitempty"`
+	Method      string `json:"method,omitempty"`
+	DurationSec int    `json:"duration_sec,omitempty"`
+	RPS         int    `json:"rps,omitempty"`
+	Concurrency int    `json:"concurrency,omitempty"`
+}
+
+type AssignmentDetails struct {
+	TestID      string
+	WorkerID    string
+	Status      models.AssignmentStatus
+	AssignedAt  time.Time
+	StartedAt   *time.Time
+	CompletedAt *time.Time
+
+	TargetURL   string
+	Method      string
+	DurationSec int
+	RPS         int
+	Concurrency int
 }
 
 type HeartbeatResponse struct {
@@ -56,7 +75,15 @@ type HeartbeatRequest struct {
 	Status models.WorkerStatus `json:"status"`
 }
 
-func (c *Client) doRequest(ctx context.Context, method string, path string, request any,response any,expectedStatus int) error {
+// TestStatusResponse mirrors the subset of models.Test fields the worker
+// needs in order to detect that a test has been stopped from the control
+// plane while a worker is actively executing it.
+type TestStatusResponse struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+}
+
+func (c *Client) doRequest(ctx context.Context, method string, path string, request any, response any, expectedStatus int) error {
 
 	var body io.Reader
 	if request != nil {
@@ -104,7 +131,7 @@ func (c *Client) doRequest(ctx context.Context, method string, path string, requ
 	return json.NewDecoder(resp.Body).Decode(response)
 }
 
-func (c *Client) RegisterWorker(ctx context.Context,req RegisterWorkerRequest) (*RegisterWorkerResponse, error) {
+func (c *Client) RegisterWorker(ctx context.Context, req RegisterWorkerRequest) (*RegisterWorkerResponse, error) {
 
 	var resp RegisterWorkerResponse
 
@@ -144,7 +171,7 @@ func (c *Client) Heartbeat(
 	)
 }
 
-func (c *Client) GetAssignment(ctx context.Context, workerID string, ) (*AssignmentResponse, error) {
+func (c *Client) GetAssignment(ctx context.Context, workerID string) (*AssignmentResponse, error) {
 
 	var assignment AssignmentResponse
 	err := c.doRequest(
@@ -162,7 +189,7 @@ func (c *Client) GetAssignment(ctx context.Context, workerID string, ) (*Assignm
 	return &assignment, nil
 }
 
-func (c *Client) StartAssignment(ctx context.Context, workerID string, testID string,) error {
+func (c *Client) StartAssignment(ctx context.Context, workerID string, testID string) error {
 
 	req := models.AssignmentTransitionRequest{
 		TestID: testID,
@@ -192,4 +219,46 @@ func (c *Client) CompleteAssignment(ctx context.Context, workerID string, testID
 		nil,
 		http.StatusNoContent,
 	)
+}
+
+func (c *Client) FailAssignment(ctx context.Context, workerID string, testID string) error {
+	req := models.AssignmentTransitionRequest{
+		TestID: testID,
+	}
+
+	return c.doRequest(
+		ctx,
+		http.MethodPost,
+		fmt.Sprintf(
+			"/api/v1/workers/%s/assignment/fail",
+			workerID,
+		),
+		req,
+		nil,
+		http.StatusNoContent,
+	)
+}
+
+// GetTest fetches the current status of a test. Workers use this to detect,
+// while actively executing an assignment, that the test has been stopped
+// from the control plane (status STOPPING/STOPPED) so they can cancel their
+// in-flight load generation instead of running for the full configured
+// duration regardless of the stop request.
+func (c *Client) GetTest(ctx context.Context, testID string) (*TestStatusResponse, error) {
+
+	var test TestStatusResponse
+
+	err := c.doRequest(
+		ctx,
+		http.MethodGet,
+		fmt.Sprintf("/api/v1/tests/%s", testID),
+		nil,
+		&test,
+		http.StatusOK,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &test, nil
 }

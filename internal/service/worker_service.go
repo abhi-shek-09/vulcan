@@ -3,12 +3,12 @@ package service
 import (
 	"context"
 	"crypto/rand"
+	"github.com/oklog/ulid/v2"
 	"strings"
 	"time"
 	"vulcan/internal/models"
 	"vulcan/internal/repository"
 	"vulcan/internal/validation"
-	"github.com/oklog/ulid/v2"
 )
 
 type RegisterWorkerRequest struct {
@@ -19,7 +19,7 @@ type RegisterWorkerRequest struct {
 }
 
 type HeartbeatRequest struct {
-    Status models.WorkerStatus `json:"status"`
+	Status models.WorkerStatus `json:"status"`
 }
 
 type WorkerService struct {
@@ -59,7 +59,7 @@ func (s *WorkerService) RegisterWorker(
 	now := time.Now().UTC()
 
 	worker := &models.Worker{
-		ID:            ulid.MustNew(ulid.Timestamp(now),rand.Reader,).String(), // Generates a cryptographically secure random UUIDv4
+		ID:            ulid.MustNew(ulid.Timestamp(now), rand.Reader).String(), // Generates a cryptographically secure random UUIDv4
 		Hostname:      req.Hostname,
 		Version:       req.Version,
 		Status:        models.WorkerStatusIdle,
@@ -92,9 +92,9 @@ func (s *WorkerService) GetWorkerByID(
 }
 
 func (s *WorkerService) Heartbeat(ctx context.Context, id string, req HeartbeatRequest) error {
-	
+
 	switch req.Status {
-		case
+	case
 		// do not allow offline or registering
 		// only control plane is allowed to do that
 		models.WorkerStatusIdle,

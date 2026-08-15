@@ -8,13 +8,14 @@ const (
 	AssignmentStatusReserved  AssignmentStatus = "RESERVED"
 	AssignmentStatusRunning   AssignmentStatus = "RUNNING"
 	AssignmentStatusCompleted AssignmentStatus = "COMPLETED"
+	AssignmentStatusFailed    AssignmentStatus = "FAILED"
 )
 
 type Assignment struct {
-	TestID      string
-	WorkerID    string
+	TestID   string
+	WorkerID string
 
-	Status      AssignmentStatus
+	Status AssignmentStatus
 
 	AssignedAt  time.Time
 	StartedAt   *time.Time

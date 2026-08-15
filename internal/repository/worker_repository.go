@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 	"strings"
+	"time"
 	"vulcan/internal/api/apierrors"
 	"vulcan/internal/models"
 
@@ -17,14 +17,55 @@ type WorkerRepository interface {
 	CreateWorker(ctx context.Context, worker *models.Worker) error
 	GetWorkers(ctx context.Context) ([]models.Worker, error)
 	GetWorkerByID(ctx context.Context, id string) (*models.Worker, error)
-	UpdateHeartbeat(ctx context.Context,id string, status models.WorkerStatus) error
-	MarkOfflineWorkers(ctx context.Context, cutoff time.Time) (int64, error)
-	ReserveWorkersForTest(ctx context.Context, testID string, workerCount int) ([]models.Worker, error)
-	ReleaseWorkersForTest(ctx context.Context, testID string,) error
 
-	GetReservedAssignment(ctx context.Context, workerID string,) (*models.Assignment, error)
-	MarkAssignmentRunning(ctx context.Context, testID string,workerID string,) error
-	MarkAssignmentCompleted(ctx context.Context, testID string, workerID string,) error
+	UpdateHeartbeat(
+		ctx context.Context,
+		id string,
+		status models.WorkerStatus,
+	) error
+
+	MarkOfflineWorkers(
+		ctx context.Context,
+		cutoff time.Time,
+	) (int64, error)
+
+	ReserveWorkersForTest(
+		ctx context.Context,
+		testID string,
+		workerCount int,
+	) ([]models.Worker, error)
+
+	ReleaseWorkersForTest(
+		ctx context.Context,
+		testID string,
+	) error
+
+	GetReservedAssignment(
+		ctx context.Context,
+		workerID string,
+	) (*AssignmentDetails, error)
+
+	MarkAssignmentRunning(
+		ctx context.Context,
+		testID string,
+		workerID string,
+	) error
+
+	MarkAssignmentCompleted(
+		ctx context.Context,
+		testID string,
+		workerID string,
+	) error
+
+	MarkAssignmentFailed(
+		ctx context.Context,
+		testID string,
+		workerID string,
+	) error
+
+	MarkAssignmentsFailedForOfflineWorkers(
+		ctx context.Context,
+	) (int64, error)
 }
 
 type PostgresWorkerRepository struct {
@@ -197,7 +238,7 @@ func (wr *PostgresWorkerRepository) UpdateHeartbeat(ctx context.Context, id stri
 	return nil
 }
 
-func (wr *PostgresWorkerRepository) MarkOfflineWorkers(ctx context.Context, cutoff time.Time) (int64, error){
+func (wr *PostgresWorkerRepository) MarkOfflineWorkers(ctx context.Context, cutoff time.Time) (int64, error) {
 	const query = `
 		UPDATE workers
 		SET
@@ -329,7 +370,7 @@ func (wr *PostgresWorkerRepository) ReserveWorkersForTest(ctx context.Context, t
 	}
 
 	// insert into test workers table => instead of one by one insert, we do a bulk insert
-	// INSERT INTO test_workers (test_id, worker_id, assigned_at) 
+	// INSERT INTO test_workers (test_id, worker_id, assigned_at)
 	// VALUES ($1, $2, NOW()), ($1, $3, NOW()), ($1, $4, NOW());
 	insertQuery := fmt.Sprintf(`
 		INSERT INTO test_workers (
@@ -427,4 +468,90 @@ func (wr *PostgresWorkerRepository) ReleaseWorkersForTest(ctx context.Context, t
 	}
 
 	return nil
+}
+
+func (wr *PostgresWorkerRepository) MarkAssignmentsFailedForOfflineWorkers(
+	ctx context.Context,
+) (int64, error) {
+	tx, err := wr.db.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf(
+			"begin offline assignment reconciliation transaction: %w",
+			err,
+		)
+	}
+	defer tx.Rollback(ctx)
+
+	/*
+		Any RESERVED/RUNNING assignment belonging to an OFFLINE worker
+		can no longer complete successfully.
+
+		Mark it FAILED.
+	*/
+
+	const failAssignmentsQuery = `
+		UPDATE test_workers tw
+		SET
+			status = 'FAILED',
+			completed_at = NOW()
+		FROM workers w
+		WHERE
+			tw.worker_id = w.id
+			AND w.status = 'OFFLINE'
+			AND tw.status IN ('RESERVED', 'RUNNING');
+	`
+
+	result, err := tx.Exec(
+		ctx,
+		failAssignmentsQuery,
+	)
+	if err != nil {
+		return 0, fmt.Errorf(
+			"fail assignments for offline workers: %w",
+			err,
+		)
+	}
+
+	affected := result.RowsAffected()
+
+	/*
+		Any test with a failed assignment must be FAILED.
+
+		We only touch RUNNING tests.
+	*/
+
+	const failTestsQuery = `
+		UPDATE tests t
+		SET
+			status = 'FAILED',
+			updated_at = NOW()
+		WHERE
+			t.status = 'RUNNING'
+			AND EXISTS (
+				SELECT 1
+				FROM test_workers tw
+				WHERE
+					tw.test_id = t.id
+					AND tw.status = 'FAILED'
+			);
+	`
+
+	if _, err := tx.Exec(
+		ctx,
+		failTestsQuery,
+	); err != nil {
+		return 0, fmt.Errorf(
+			"fail tests for offline workers: %w",
+			err,
+		)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf(
+			"commit offline assignment reconciliation transaction: %w",
+			err,
+		)
+	}
+
+	return affected, nil
 }

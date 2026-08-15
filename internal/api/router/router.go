@@ -11,7 +11,7 @@ import (
 	"vulcan/internal/api/response"
 )
 
-func NewRouter(testHandler *handlers.TestHandler, workerHandler *handlers.WorkerHandler, dashboardHandler *handlers.DashboardHandler,) *chi.Mux {
+func NewRouter(testHandler *handlers.TestHandler, workerHandler *handlers.WorkerHandler, dashboardHandler *handlers.DashboardHandler) *chi.Mux {
 	r := chi.NewRouter()
 
 	// Middleware
@@ -30,17 +30,18 @@ func NewRouter(testHandler *handlers.TestHandler, workerHandler *handlers.Worker
 			r.Post("/", workerHandler.RegisterWorker)
 			r.Get("/", workerHandler.GetWorkers)
 			r.Get("/{id}", workerHandler.GetWorkerByID)
-			r.Post("/{id}/heartbeat",workerHandler.Heartbeat)
+			r.Post("/{id}/heartbeat", workerHandler.Heartbeat)
 			r.Get("/{id}/assignment", workerHandler.GetWorkerAssignment)
 			r.Post("/{id}/assignment/start", workerHandler.StartAssignment)
 			r.Post("/{id}/assignment/complete", workerHandler.CompleteAssignment)
+			r.Post("/{id}/assignment/fail", workerHandler.FailAssignment)
 		})
 
 		r.Route("/tests", func(r chi.Router) {
 			r.Post("/", testHandler.CreateTest)
 			r.Get("/", testHandler.GetTests)
 			r.Get("/{id}", testHandler.GetTestByID)
-			r.Post("/{id}/start",testHandler.StartTest)
+			r.Post("/{id}/start", testHandler.StartTest)
 			r.Post("/{id}/stop", testHandler.StopTest)
 			r.Get("/{id}/metrics", dashboardHandler.GetMetrics)
 			r.Get("/{id}/metrics/history", dashboardHandler.GetHistory)
@@ -52,6 +53,6 @@ func NewRouter(testHandler *handlers.TestHandler, workerHandler *handlers.Worker
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
-    payload := map[string]string{"status": "ok"}
-    response.JSON(w, http.StatusOK, payload)
+	payload := map[string]string{"status": "ok"}
+	response.JSON(w, http.StatusOK, payload)
 }

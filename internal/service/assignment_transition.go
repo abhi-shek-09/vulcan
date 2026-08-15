@@ -38,3 +38,19 @@ func (ws *WorkerService) CompleteAssignment(
 
 	return nil
 }
+
+func (ws *WorkerService) FailAssignment(
+	ctx context.Context,
+	testID string,
+	workerID string,
+) error {
+	if err := ws.repo.MarkAssignmentFailed(
+		ctx,
+		testID,
+		workerID,
+	); err != nil {
+		return fmt.Errorf("fail assignment: %w", err)
+	}
+
+	return nil
+}

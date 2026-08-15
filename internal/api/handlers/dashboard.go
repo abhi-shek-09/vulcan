@@ -1,17 +1,15 @@
 package handlers
 
 import (
-	"net/http"
 	"github.com/go-chi/chi/v5"
+	"net/http"
 	"vulcan/internal/api/response"
 	"vulcan/internal/dashboard"
 )
 
-
 type DashboardHandler struct {
 	service *dashboard.Service
 }
-
 
 func NewDashboardHandler(
 	service *dashboard.Service,
@@ -21,15 +19,15 @@ func NewDashboardHandler(
 	}
 }
 
-func (h *DashboardHandler) GetMetrics(w http.ResponseWriter, r *http.Request){
-	testID := chi.URLParam(r,"id")
-	metrics,err := h.service.GetLiveMetrics(testID)
+func (h *DashboardHandler) GetMetrics(w http.ResponseWriter, r *http.Request) {
+	testID := chi.URLParam(r, "id")
+	metrics, err := h.service.GetLiveMetrics(testID)
 	if err != nil {
 		response.JSON(
 			w,
 			http.StatusInternalServerError,
 			map[string]string{
-				"error":err.Error(),
+				"error": err.Error(),
 			},
 		)
 		return
@@ -44,26 +42,26 @@ func (h *DashboardHandler) GetMetrics(w http.ResponseWriter, r *http.Request){
 func (h *DashboardHandler) GetHistory(
 	w http.ResponseWriter,
 	r *http.Request,
-){
+) {
 
-	testID:=chi.URLParam(r,"id")
+	testID := chi.URLParam(r, "id")
 
-	start:=r.URL.Query().Get("start")
-	end:=r.URL.Query().Get("end")
-	step:=r.URL.Query().Get("step")
+	start := r.URL.Query().Get("start")
+	end := r.URL.Query().Get("end")
+	step := r.URL.Query().Get("step")
 
-	result,err:=h.service.GetHistory(
+	result, err := h.service.GetHistory(
 		testID,
 		start,
 		end,
 		step,
 	)
-	if err!=nil{
+	if err != nil {
 		response.JSON(
 			w,
 			http.StatusInternalServerError,
 			map[string]string{
-				"error":err.Error(),
+				"error": err.Error(),
 			},
 		)
 		return

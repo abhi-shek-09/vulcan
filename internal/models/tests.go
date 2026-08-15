@@ -14,6 +14,7 @@ const (
 	StatusStopping  TestStatus = constants.StatusStopping
 	StatusStopped   TestStatus = constants.StatusStopped
 	StatusCompleted TestStatus = constants.StatusCompleted
+	StatusFailed    TestStatus = constants.StatusFailed
 )
 
 type Test struct {

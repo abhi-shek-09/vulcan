@@ -4,15 +4,21 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"time"
+)
+
+const (
+	registerInitialBackoff = 1 * time.Second
+	registerMaxBackoff     = 30 * time.Second
 )
 
 type Runtime struct {
 	logger *slog.Logger
 	worker *Worker
-	wg sync.WaitGroup
+	wg     sync.WaitGroup
 }
 
-func NewRuntime(logger *slog.Logger,worker *Worker) *Runtime {
+func NewRuntime(logger *slog.Logger, worker *Worker) *Runtime {
 	return &Runtime{
 		logger: logger,
 		worker: worker,
@@ -22,7 +28,15 @@ func NewRuntime(logger *slog.Logger,worker *Worker) *Runtime {
 func (r *Runtime) Start(ctx context.Context) error {
 
 	r.logger.Info("starting worker runtime")
-	if err := r.worker.Register(ctx); err != nil {
+
+	// Registration retries with exponential backoff instead of giving up
+	// after a single attempt. This matters at startup in particular: the
+	// control plane may not be reachable yet (connection refused) or may
+	// be slow to respond (request timeout), e.g. when the worker container
+	// starts before the server/database are ready. Without a retry loop,
+	// a single transient failure here would permanently kill the worker
+	// process.
+	if err := r.registerWithRetry(ctx); err != nil {
 		return err
 	}
 
@@ -54,4 +68,39 @@ func (r *Runtime) Start(ctx context.Context) error {
 	r.logger.Info("worker runtime stopped")
 
 	return nil
+}
+
+// registerWithRetry attempts to register the worker with the control plane,
+// retrying with capped exponential backoff on failure (e.g. connection
+// refused because the control plane isn't up yet, or a request timeout due
+// to a slow/overloaded control plane). It only gives up if the parent
+// context is cancelled first (e.g. SIGTERM during startup).
+func (r *Runtime) registerWithRetry(ctx context.Context) error {
+
+	backoff := registerInitialBackoff
+
+	for {
+		err := r.worker.Register(ctx)
+		if err == nil {
+			return nil
+		}
+
+		r.logger.Warn(
+			"worker registration failed, retrying",
+			"error", err,
+			"retry_in", backoff,
+		)
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+
+		case <-time.After(backoff):
+		}
+
+		backoff *= 2
+		if backoff > registerMaxBackoff {
+			backoff = registerMaxBackoff
+		}
+	}
 }
