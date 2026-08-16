@@ -97,6 +97,11 @@ services:
       PORT: "8080"
       DB_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
       VICTORIA_METRICS_URL: http://victoriametrics:8428
+      NATS_URL: nats://nats:4222
+      WORKER_CAPACITY_RPS: "100"
+      WORKER_BINARY_PATH: /usr/local/bin/worker
+      VULCAN_PROJECT_ROOT: /app
+      CONTROL_PLANE_URL: http://control-plane:8080
 
   aggregator:
     build:

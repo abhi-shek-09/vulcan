@@ -4,12 +4,12 @@ import (
 	"context"
 	"crypto/rand"
 	"github.com/oklog/ulid/v2"
-	"strconv"
 	"strings"
 	"time"
 
 	"vulcan/internal/api/apierrors"
 	"vulcan/internal/models"
+	"vulcan/internal/provisioner"
 	"vulcan/internal/repository"
 	"vulcan/internal/scheduler"
 	"vulcan/internal/validation"
@@ -26,20 +26,26 @@ type CreateTestRequest struct {
 }
 
 type TestService struct {
-	testRepo   repository.TestRepository
-	workerRepo repository.WorkerRepository
-	scheduler  scheduler.Scheduler
+	testRepo          repository.TestRepository
+	workerRepo        repository.WorkerRepository
+	scheduler         scheduler.Scheduler
+	provisioner       provisioner.Provisioner
+	workerCapacityRPS int
 }
 
 func NewTestService(
 	testRepo repository.TestRepository,
 	scheduler scheduler.Scheduler,
 	workerRepo repository.WorkerRepository,
+	workerProvisioner provisioner.Provisioner,
+	workerCapacityRPS int,
 ) *TestService {
 	return &TestService{
-		testRepo:   testRepo,
-		scheduler:  scheduler,
-		workerRepo: workerRepo,
+		testRepo:          testRepo,
+		scheduler:         scheduler,
+		workerRepo:        workerRepo,
+		provisioner:       workerProvisioner,
+		workerCapacityRPS: workerCapacityRPS,
 	}
 }
 
@@ -52,10 +58,6 @@ func (s *TestService) CreateTest(
 
 	if err := validation.Required("name", req.Name); err != nil {
 		return nil, err
-	}
-
-	if req.WorkerCount < 1 {
-		return nil, validation.Required("worker_count", strconv.Itoa(req.WorkerCount))
 	}
 
 	req.TargetURL = strings.TrimSpace(req.TargetURL)
@@ -91,7 +93,7 @@ func (s *TestService) CreateTest(
 		ID:          ulid.MustNew(ulid.Timestamp(now), rand.Reader).String(),
 		Name:        req.Name,
 		Status:      models.StatusCreated,
-		WorkerCount: req.WorkerCount,
+		WorkerCount: 0,
 		TargetURL:   strings.TrimSpace(req.TargetURL),
 		Method:      strings.ToUpper(strings.TrimSpace(req.Method)),
 		DurationSec: req.DurationSec,
@@ -100,6 +102,12 @@ func (s *TestService) CreateTest(
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
+
+	requiredWorkers, err := scheduler.RequiredWorkers(test.RPS, s.workerCapacityRPS)
+	if err != nil {
+		return nil, err
+	}
+	test.WorkerCount = requiredWorkers
 
 	if err := s.testRepo.CreateTest(ctx, test); err != nil {
 		return nil, err
@@ -123,7 +131,7 @@ func (s *TestService) StopTest(ctx context.Context, id string) error {
 		return err
 	}
 
-	if test.Status == models.StatusStopped || test.Status == models.StatusCompleted || test.Status == models.StatusFailed{
+	if test.Status == models.StatusStopped || test.Status == models.StatusCompleted || test.Status == models.StatusFailed {
 		return nil
 	}
 
@@ -156,6 +164,61 @@ func (s *TestService) StopTest(ctx context.Context, id string) error {
 	return nil
 }
 
+func (s *TestService) ensureWorkersAvailable(ctx context.Context, required int) error {
+	workers, err := s.workerRepo.GetWorkers(ctx)
+	if err != nil {
+		return err
+	}
+
+	idle := 0
+	for _, worker := range workers {
+		if worker.Status == models.WorkerStatusIdle {
+			idle++
+		}
+	}
+
+	missing := required - idle
+	if missing <= 0 {
+		return nil
+	}
+	if s.provisioner == nil {
+		return apierrors.ErrInsufficientWorkers
+	}
+
+	if err := s.provisioner.Provision(ctx, missing); err != nil {
+		return err
+	}
+
+	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		workers, err = s.workerRepo.GetWorkers(waitCtx)
+		if err != nil {
+			return err
+		}
+
+		idle = 0
+		for _, worker := range workers {
+			if worker.Status == models.WorkerStatusIdle {
+				idle++
+			}
+		}
+		if idle >= required {
+			return nil
+		}
+
+		select {
+		case <-waitCtx.Done():
+			return waitCtx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
 func (s *TestService) StartTest(ctx context.Context, testID string) ([]models.Worker, error) {
 
 	test, err := s.testRepo.GetTestByID(ctx, testID)
@@ -185,10 +248,33 @@ func (s *TestService) StartTest(ctx context.Context, testID string) ([]models.Wo
 		return nil, apierrors.ErrInvalidTestState
 	}
 
+	requiredWorkers, err := scheduler.RequiredWorkers(test.RPS, s.workerCapacityRPS)
+	if err != nil {
+		_, _ = s.testRepo.TryTransitionStatus(ctx, testID, models.StatusStarting, models.StatusCreated)
+		return nil, err
+	}
+
+	if err := s.testRepo.UpdateWorkerCount(ctx, testID, requiredWorkers); err != nil {
+		_, _ = s.testRepo.TryTransitionStatus(ctx, testID, models.StatusStarting, models.StatusCreated)
+		return nil, err
+	}
+
+	if err := s.ensureWorkersAvailable(ctx, requiredWorkers); err != nil {
+		_, _ = s.testRepo.TryTransitionStatus(ctx, testID, models.StatusStarting, models.StatusCreated)
+		return nil, err
+	}
+
+	rpsAllocations, err := scheduler.DistributeRPS(test.RPS, requiredWorkers)
+	if err != nil {
+		_, _ = s.testRepo.TryTransitionStatus(ctx, testID, models.StatusStarting, models.StatusCreated)
+		return nil, err
+	}
+
 	workers, err := s.scheduler.AllocateWorkers(
 		ctx,
 		test.ID,
-		test.WorkerCount,
+		requiredWorkers,
+		rpsAllocations,
 	)
 	if err != nil {
 		// Roll back so the test can be retried instead of being stuck in

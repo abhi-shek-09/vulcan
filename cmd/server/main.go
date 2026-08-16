@@ -10,6 +10,7 @@ import (
 	"vulcan/internal/config"
 	"vulcan/internal/dashboard"
 	"vulcan/internal/db"
+	"vulcan/internal/provisioner"
 	"vulcan/internal/reconciler"
 	"vulcan/internal/repository"
 	"vulcan/internal/scheduler"
@@ -43,9 +44,20 @@ func main() {
 
 	schedulerSvc := scheduler.NewDefaultScheduler(workerRepository)
 	testRepository := repository.NewTestRepository(pool)
-	testService := service.NewTestService(testRepository, schedulerSvc, workerRepository)
+	workerProvisioner := provisioner.NewProcessProvisioner(
+		cfg.WorkerBinaryPath,
+		cfg.WorkerWorkingDir,
+		cfg.NATSURL,
+		cfg.ControlPlaneURL,
+	)
+	testService := service.NewTestService(
+		testRepository,
+		schedulerSvc,
+		workerRepository,
+		workerProvisioner,
+		cfg.WorkerCapacityRPS,
+	)
 	testHandler := handlers.NewTestHandler(testService)
-
 
 	workerReconciler := reconciler.NewWorkerReconciler(workerRepository, logger)
 
@@ -69,7 +81,7 @@ func main() {
 	dashboardHandler := handlers.NewDashboardHandler(
 		dashboardService,
 	)
-	
+
 	// Initialize router
 	r := api.NewRouter(testHandler, workerHandler, dashboardHandler)
 

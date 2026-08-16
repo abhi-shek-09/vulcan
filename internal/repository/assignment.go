@@ -42,7 +42,7 @@ func (wr *PostgresWorkerRepository) GetReservedAssignment(
 			t.target_url,
 			t.method,
 			t.duration_sec,
-			t.rps,
+			tw.rps,
 			t.concurrency
 		FROM test_workers tw
 		JOIN tests t
@@ -126,6 +126,41 @@ func (wr *PostgresWorkerRepository) MarkAssignmentCompleted(
 		return fmt.Errorf("begin assignment completion transaction: %w", err)
 	}
 	defer tx.Rollback(ctx)
+
+	/*
+		Serialize completion transactions for the same test by locking
+		the parent test row.
+
+		Without this lock, two workers can complete their assignments
+		concurrently. Under PostgreSQL's default READ COMMITTED isolation,
+		each transaction can see its own assignment as COMPLETED while
+		still seeing the other transaction's assignment as RUNNING because
+		the other transaction has not committed yet.
+
+		Locking the parent test row first guarantees that only one
+		completion transaction for a given test can perform the assignment
+		completion check at a time.
+	*/
+	const lockTestQuery = `
+		SELECT id
+		FROM tests
+		WHERE id = $1
+		FOR UPDATE;
+	`
+
+	var lockedTestID string
+
+	if err := tx.QueryRow(
+		ctx,
+		lockTestQuery,
+		testID,
+	).Scan(&lockedTestID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return apierrors.ErrTestNotFound
+		}
+
+		return fmt.Errorf("lock test for assignment completion: %w", err)
+	}
 
 	const completeAssignmentQuery = `
 		UPDATE test_workers
@@ -211,16 +246,11 @@ func (wr *PostgresWorkerRepository) MarkAssignmentFailed(
 	defer tx.Rollback(ctx)
 
 	/*
-		Mark the assignment FAILED.
-
-		We intentionally accept both RESERVED and RUNNING here.
-
-		Why?
+		An assignment can fail while either RESERVED or RUNNING.
 
 		A worker can disappear after receiving an assignment but before
 		successfully transitioning it to RUNNING.
 	*/
-
 	const failAssignmentQuery = `
 		UPDATE test_workers
 		SET
@@ -247,13 +277,11 @@ func (wr *PostgresWorkerRepository) MarkAssignmentFailed(
 	}
 
 	/*
-		A failed assignment means the test itself has failed.
+		A failed assignment means the test cannot complete successfully.
 
-		This is especially important for worker failures and HTTP
-		execution failures. Without this update the parent test remains
-		RUNNING forever.
+		Transition the parent test to FAILED atomically with the
+		assignment transition.
 	*/
-
 	const failTestQuery = `
 		UPDATE tests
 		SET

@@ -17,6 +17,7 @@ type TestRepository interface {
 	GetTests(ctx context.Context) ([]models.Test, error)
 	GetTestByID(ctx context.Context, id string) (*models.Test, error)
 	UpdateStatus(ctx context.Context, id string, status models.TestStatus) error
+	UpdateWorkerCount(ctx context.Context, id string, workerCount int) error
 
 	// TryTransitionStatus atomically moves a test from `from` to `to` and
 	// reports whether the transition actually happened (via the DB row
@@ -209,6 +210,22 @@ func (r *PostgresTestRepository) UpdateStatus(ctx context.Context, id string, st
 		return apierrors.ErrTestNotFound
 	}
 
+	return nil
+}
+
+func (r *PostgresTestRepository) UpdateWorkerCount(ctx context.Context, id string, workerCount int) error {
+	const query = `
+		UPDATE tests
+		SET worker_count = $2, updated_at = NOW()
+		WHERE id = $1
+	`
+	result, err := r.db.Exec(ctx, query, id, workerCount)
+	if err != nil {
+		return fmt.Errorf("update test worker count: %w", err)
+	}
+	if result.RowsAffected() == 0 {
+		return apierrors.ErrTestNotFound
+	}
 	return nil
 }
 

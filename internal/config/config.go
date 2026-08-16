@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 
 	"github.com/joho/godotenv"
@@ -16,6 +17,10 @@ type Config struct {
 	DatabaseURL        string
 	VictoriaMetricsURL string
 	NATSURL            string
+	WorkerCapacityRPS  int
+	WorkerBinaryPath   string
+	WorkerWorkingDir   string
+	ControlPlaneURL    string
 }
 
 // load reads every known environment variable without validating any of
@@ -29,6 +34,10 @@ func load() *Config {
 		DatabaseURL:        os.Getenv("DB_URL"),
 		VictoriaMetricsURL: os.Getenv("VICTORIA_METRICS_URL"),
 		NATSURL:            os.Getenv("NATS_URL"),
+		WorkerCapacityRPS:  parsePositiveInt(os.Getenv("WORKER_CAPACITY_RPS"), 100),
+		WorkerBinaryPath:   os.Getenv("WORKER_BINARY_PATH"),
+		WorkerWorkingDir:   os.Getenv("VULCAN_PROJECT_ROOT"),
+		ControlPlaneURL:    os.Getenv("CONTROL_PLANE_URL"),
 	}
 }
 
@@ -46,6 +55,22 @@ func LoadServerConfig() (*Config, error) {
 		return nil, errors.New("DB_URL environment variable is required")
 	}
 
+	if cfg.NATSURL == "" {
+		return nil, errors.New("NATS_URL environment variable is required")
+	}
+
+	if cfg.ControlPlaneURL == "" {
+		cfg.ControlPlaneURL = "http://localhost:" + cfg.Port
+	}
+
+	if cfg.WorkerBinaryPath == "" {
+		cfg.WorkerBinaryPath = "./worker"
+	}
+
+	if cfg.WorkerWorkingDir == "" {
+		cfg.WorkerWorkingDir = "."
+	}
+
 	if cfg.VictoriaMetricsURL == "" {
 		return nil, errors.New(
 			"VICTORIA_METRICS_URL environment variable is required",
@@ -53,6 +78,14 @@ func LoadServerConfig() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func parsePositiveInt(value string, fallback int) int {
+	var n int
+	if _, err := fmt.Sscanf(value, "%d", &n); err != nil || n <= 0 {
+		return fallback
+	}
+	return n
 }
 
 // LoadAggregatorConfig loads and validates the configuration required by

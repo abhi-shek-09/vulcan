@@ -143,6 +143,13 @@ func (w *Worker) processAssignment(
 		w.id,
 		assignment.TestID,
 	); err != nil {
+		w.logger.Error(
+			"failed to start assignment",
+			"test_id", assignment.TestID,
+			"worker_id", w.id,
+			"error", err,
+		)
+
 		w.status = models.WorkerStatusIdle
 		return err
 	}
@@ -156,9 +163,9 @@ func (w *Worker) processAssignment(
 	if err := w.execute(ctx, assignment); err != nil {
 
 		// The test was stopped from the control plane while we were
-		// executing it. The control plane already released the worker
-		// and completed the assignment row as part of StopTest, so we
-		// must not call Fail/Complete again -- just go back to IDLE.
+		// executing it. The control plane already reconciled the
+		// assignment/worker state, so the worker must not attempt
+		// another state transition.
 		if errors.Is(err, ErrAssignmentStopped) {
 			w.logger.Info(
 				"assignment stopped externally",
@@ -169,12 +176,17 @@ func (w *Worker) processAssignment(
 			return nil
 		}
 
-		// Only mark as Failed if the execution error wasn't caused by a
-		// parent context cancellation (i.e. the worker itself is
-		// shutting down, not the assignment failing).
+		// Do not mark the assignment as failed when the worker itself
+		// is shutting down because its parent context was cancelled.
 		if ctx.Err() == nil {
-			if failErr := w.client.FailAssignment(
+			failCtx, cancel := context.WithTimeout(
 				context.Background(),
+				5*time.Second,
+			)
+			defer cancel()
+
+			if failErr := w.client.FailAssignment(
+				failCtx,
 				w.id,
 				assignment.TestID,
 			); failErr != nil {
@@ -190,8 +202,22 @@ func (w *Worker) processAssignment(
 		return err
 	}
 
+	/*
+		Execution completed successfully.
+
+		Use an independent short-lived context for the completion
+		request. The execution context may already be cancelled or
+		expired when the duration ends, and we still need to persist
+		the assignment's COMPLETED state.
+	*/
+	completionCtx, cancel := context.WithTimeout(
+		context.Background(),
+		5*time.Second,
+	)
+	defer cancel()
+
 	if err := w.client.CompleteAssignment(
-		ctx,
+		completionCtx,
 		w.id,
 		assignment.TestID,
 	); err != nil {

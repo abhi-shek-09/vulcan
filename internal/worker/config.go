@@ -66,6 +66,10 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.Worker.Hostname = cfg.OverrideHostname
 	}
 
+	if controlPlaneURL := os.Getenv("CONTROL_PLANE_URL"); controlPlaneURL != "" {
+		cfg.ControlPlane.URL = controlPlaneURL
+	}
+
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}

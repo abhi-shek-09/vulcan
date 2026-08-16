@@ -33,6 +33,7 @@ type WorkerRepository interface {
 		ctx context.Context,
 		testID string,
 		workerCount int,
+		rpsAllocations []int,
 	) ([]models.Worker, error)
 
 	ReleaseWorkersForTest(
@@ -261,7 +262,12 @@ func (wr *PostgresWorkerRepository) MarkOfflineWorkers(ctx context.Context, cuto
 	return result.RowsAffected(), nil
 }
 
-func (wr *PostgresWorkerRepository) ReserveWorkersForTest(ctx context.Context, testID string, workerCount int) ([]models.Worker, error) {
+func (wr *PostgresWorkerRepository) ReserveWorkersForTest(
+	ctx context.Context,
+	testID string,
+	workerCount int,
+	rpsAllocations []int,
+) ([]models.Worker, error) {
 
 	tx, err := wr.db.Begin(ctx)
 	if err != nil {
@@ -270,7 +276,16 @@ func (wr *PostgresWorkerRepository) ReserveWorkersForTest(ctx context.Context, t
 	defer tx.Rollback(ctx)
 
 	const selectQuery = `
-		SELECT id
+		SELECT
+			id,
+			hostname,
+			version,
+			status,
+			cpu_count,
+			memory_mb,
+			registered_at,
+			last_heartbeat,
+			updated_at
 		FROM workers
 		WHERE status = 'IDLE'
 		ORDER BY last_heartbeat DESC
@@ -284,16 +299,30 @@ func (wr *PostgresWorkerRepository) ReserveWorkersForTest(ctx context.Context, t
 	}
 	defer rows.Close()
 
-	var workerIDs []string
+	var (
+		workerIDs       []string
+		reservedWorkers []models.Worker
+	)
 
 	for rows.Next() {
-		var id string
+		var w models.Worker
 
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan worker id: %w", err)
+		if err := rows.Scan(
+			&w.ID,
+			&w.Hostname,
+			&w.Version,
+			&w.Status,
+			&w.CPUCount,
+			&w.MemoryMB,
+			&w.RegisteredAt,
+			&w.LastHeartbeat,
+			&w.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan worker: %w", err)
 		}
 
-		workerIDs = append(workerIDs, id)
+		workerIDs = append(workerIDs, w.ID)
+		reservedWorkers = append(reservedWorkers, w)
 	}
 
 	if err := rows.Err(); err != nil {
@@ -309,64 +338,36 @@ func (wr *PostgresWorkerRepository) ReserveWorkersForTest(ctx context.Context, t
 		SET
 			status = 'RESERVED',
 			updated_at = NOW()
-		WHERE id = ANY($1)
-		RETURNING
-			id,
-			hostname,
-			version,
-			status,
-			cpu_count,
-			memory_mb,
-			registered_at,
-			last_heartbeat,
-			updated_at;
+		WHERE id = ANY($1);
 	`
 
-	updateRows, err := tx.Query(ctx, updateQuery, workerIDs)
-	if err != nil {
+	if _, err := tx.Exec(ctx, updateQuery, workerIDs); err != nil {
 		return nil, fmt.Errorf("reserve workers: %w", err)
 	}
-	defer updateRows.Close()
 
-	var reservedWorkers []models.Worker
-
-	for updateRows.Next() {
-		var w models.Worker
-
-		if err := updateRows.Scan(
-			&w.ID,
-			&w.Hostname,
-			&w.Version,
-			&w.Status,
-			&w.CPUCount,
-			&w.MemoryMB,
-			&w.RegisteredAt,
-			&w.LastHeartbeat,
-			&w.UpdatedAt,
-		); err != nil {
-			return nil, fmt.Errorf("scan reserved worker: %w", err)
-		}
-
-		reservedWorkers = append(reservedWorkers, w)
+	for i := range reservedWorkers {
+		reservedWorkers[i].Status = models.WorkerStatusReserved
 	}
-
-	if err := updateRows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate reserved workers: %w", err)
-	}
-
 	// Step 3: Create test-worker mappings
 	var (
 		values       = []interface{}{testID}
 		placeholders []string
 	)
 
+	if len(rpsAllocations) != len(reservedWorkers) {
+		return nil, fmt.Errorf("rps allocation count %d does not match worker count %d", len(rpsAllocations), len(reservedWorkers))
+	}
+
 	for i, worker := range reservedWorkers {
 		placeholders = append(
 			placeholders,
-			fmt.Sprintf("($1, $%d, 'RESERVED', NOW())", i+2),
+			fmt.Sprintf("($1, $%d, 'RESERVED', NOW(), $%d)", i+2, i+2+len(reservedWorkers)),
 		)
-
 		values = append(values, worker.ID)
+	}
+
+	for _, rps := range rpsAllocations {
+		values = append(values, rps)
 	}
 
 	// insert into test workers table => instead of one by one insert, we do a bulk insert
@@ -377,7 +378,8 @@ func (wr *PostgresWorkerRepository) ReserveWorkersForTest(ctx context.Context, t
 			test_id,
 			worker_id,
 			status,
-			assigned_at
+			assigned_at,
+			rps
 		)
 		VALUES %s;
 	`, strings.Join(placeholders, ","))

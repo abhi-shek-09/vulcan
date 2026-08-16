@@ -13,6 +13,7 @@ type Scheduler interface {
 		ctx context.Context,
 		testID string,
 		workerCount int,
+		rpsAllocations []int,
 	) ([]models.Worker, error)
 }
 
@@ -32,12 +33,14 @@ func (s *DefaultScheduler) AllocateWorkers(
 	ctx context.Context,
 	testID string,
 	workerCount int,
+	rpsAllocations []int,
 ) ([]models.Worker, error) {
 
 	workers, err := s.workerRepo.ReserveWorkersForTest(
 		ctx,
 		testID,
 		workerCount,
+		rpsAllocations,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("allocate workers: %w", err)
@@ -45,4 +48,3 @@ func (s *DefaultScheduler) AllocateWorkers(
 
 	return workers, nil
 }
-
