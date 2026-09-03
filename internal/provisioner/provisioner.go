@@ -7,11 +7,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 )
 
 type Provisioner interface {
 	Provision(ctx context.Context, count int) error
+	Terminate(ctx context.Context, hostnames []string) error
 }
 
 type ProcessProvisioner struct {
@@ -19,6 +21,9 @@ type ProcessProvisioner struct {
 	workingDir      string
 	natsURL         string
 	controlPlaneURL string
+
+	mu        sync.Mutex
+	processes map[string]*exec.Cmd
 }
 
 func NewProcessProvisioner(binaryPath, workingDir, natsURL, controlPlaneURL string) *ProcessProvisioner {
@@ -27,6 +32,7 @@ func NewProcessProvisioner(binaryPath, workingDir, natsURL, controlPlaneURL stri
 		workingDir:      workingDir,
 		natsURL:         natsURL,
 		controlPlaneURL: controlPlaneURL,
+		processes:       make(map[string]*exec.Cmd),
 	}
 }
 
@@ -60,6 +66,56 @@ func (p *ProcessProvisioner) Provision(ctx context.Context, count int) error {
 
 		if err := cmd.Start(); err != nil {
 			return fmt.Errorf("start worker %d: %w", i+1, err)
+		}
+
+		p.mu.Lock()
+		p.processes[hostname] = cmd
+		p.mu.Unlock()
+
+		go func(hostname string, cmd *exec.Cmd) {
+			_ = cmd.Wait()
+
+			p.mu.Lock()
+			delete(p.processes, hostname)
+			p.mu.Unlock()
+		}(hostname, cmd)
+	}
+
+	return nil
+}
+
+func (p *ProcessProvisioner) Terminate(
+	ctx context.Context,
+	hostnames []string,
+) error {
+	if len(hostnames) == 0 {
+		return nil
+	}
+
+	for _, hostname := range hostnames {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		p.mu.Lock()
+		cmd, ok := p.processes[hostname]
+		p.mu.Unlock()
+
+		if !ok {
+			// The process may already have exited.
+			continue
+		}
+
+		if cmd.Process == nil {
+			continue
+		}
+
+		if err := cmd.Process.Kill(); err != nil {
+			return fmt.Errorf(
+				"terminate worker %s: %w",
+				hostname,
+				err,
+			)
 		}
 	}
 

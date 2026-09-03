@@ -67,6 +67,11 @@ type WorkerRepository interface {
 	MarkAssignmentsFailedForOfflineWorkers(
 		ctx context.Context,
 	) (int64, error)
+
+	TerminateIdleWorkers(
+		ctx context.Context,
+		workerIDs []string,
+	) ([]string, error)
 }
 
 type PostgresWorkerRepository struct {
@@ -556,4 +561,79 @@ func (wr *PostgresWorkerRepository) MarkAssignmentsFailedForOfflineWorkers(
 	}
 
 	return affected, nil
+}
+
+func (wr *PostgresWorkerRepository) TerminateIdleWorkers(
+	ctx context.Context,
+	workerIDs []string,
+) ([]string, error) {
+	if len(workerIDs) == 0 {
+		return nil, nil
+	}
+
+	tx, err := wr.db.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin worker termination transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// Lock the workers and verify they are still IDLE.
+	// A scheduler trying to reserve one of these workers must
+	// acquire the same row lock, so only one operation can win.
+	const selectQuery = `
+		SELECT id
+		FROM workers
+		WHERE id = ANY($1)
+		  AND status = 'IDLE'
+		FOR UPDATE;
+	`
+
+	rows, err := tx.Query(ctx, selectQuery, workerIDs)
+	if err != nil {
+		return nil, fmt.Errorf("lock idle workers for termination: %w", err)
+	}
+	defer rows.Close()
+
+	var removable []string
+
+	for rows.Next() {
+		var workerID string
+
+		if err := rows.Scan(&workerID); err != nil {
+			return nil, fmt.Errorf("scan worker for termination: %w", err)
+		}
+
+		removable = append(removable, workerID)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate workers for termination: %w", err)
+	}
+
+	if len(removable) == 0 {
+		if err := tx.Commit(ctx); err != nil {
+			return nil, fmt.Errorf("commit empty termination transaction: %w", err)
+		}
+
+		return nil, nil
+	}
+
+	// Mark them DRAINING while we still hold the row locks.
+	const updateQuery = `
+		UPDATE workers
+		SET
+			status = 'DRAINING',
+			updated_at = NOW()
+		WHERE id = ANY($1);
+	`
+
+	if _, err := tx.Exec(ctx, updateQuery, removable); err != nil {
+		return nil, fmt.Errorf("mark workers draining: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit worker termination transaction: %w", err)
+	}
+
+	return removable, nil
 }
