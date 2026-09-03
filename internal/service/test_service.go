@@ -25,12 +25,32 @@ type CreateTestRequest struct {
 	Concurrency int    `json:"concurrency"`
 }
 
+// CapacityReconciler is the subset of the autoscaler's Reconciler that
+// TestService needs. It is defined here (rather than importing the
+// autoscaler package) so that *autoscaler.Reconciler satisfies it
+// structurally, with no import dependency between the two packages.
+type CapacityReconciler interface {
+	Reconcile(ctx context.Context) error
+}
+
 type TestService struct {
 	testRepo          repository.TestRepository
 	workerRepo        repository.WorkerRepository
 	scheduler         scheduler.Scheduler
 	provisioner       provisioner.Provisioner
 	workerCapacityRPS int
+
+	// reconciler, when set, is the single source of truth for fleet
+	// provisioning decisions (see autoscaler.Reconciler). When a test
+	// start needs more workers than are currently idle, TestService asks
+	// the reconciler to reconcile immediately instead of calling the
+	// provisioner itself. The reconciler recomputes desired capacity from
+	// every active test and is internally serialized, so this cannot
+	// double-provision alongside the autoscaler's periodic loop.
+	//
+	// If nil (e.g. in tests that construct TestService directly), it
+	// falls back to provisioning directly, preserving the old behaviour.
+	reconciler CapacityReconciler
 }
 
 func NewTestService(
@@ -39,6 +59,7 @@ func NewTestService(
 	workerRepo repository.WorkerRepository,
 	workerProvisioner provisioner.Provisioner,
 	workerCapacityRPS int,
+	reconciler CapacityReconciler,
 ) *TestService {
 	return &TestService{
 		testRepo:          testRepo,
@@ -46,6 +67,7 @@ func NewTestService(
 		workerRepo:        workerRepo,
 		provisioner:       workerProvisioner,
 		workerCapacityRPS: workerCapacityRPS,
+		reconciler:        reconciler,
 	}
 }
 
@@ -181,12 +203,26 @@ func (s *TestService) ensureWorkersAvailable(ctx context.Context, required int) 
 	if missing <= 0 {
 		return nil
 	}
-	if s.provisioner == nil {
-		return apierrors.ErrInsufficientWorkers
-	}
 
-	if err := s.provisioner.Provision(ctx, missing); err != nil {
-		return err
+	switch {
+	case s.reconciler != nil:
+		// Delegate to the autoscaler: it recomputes desired capacity from
+		// every currently active test (including this one, since its
+		// STARTING status is already committed by the time we get here)
+		// and provisions the aggregate shortfall exactly once. This is
+		// the single fleet-capacity policy -- the autoscaler's periodic
+		// loop and this explicit trigger both funnel through the same
+		// mutex-protected Reconcile call, so they cannot race each other
+		// into double-provisioning.
+		if err := s.reconciler.Reconcile(ctx); err != nil {
+			return err
+		}
+	case s.provisioner != nil:
+		if err := s.provisioner.Provision(ctx, missing); err != nil {
+			return err
+		}
+	default:
+		return apierrors.ErrInsufficientWorkers
 	}
 
 	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)

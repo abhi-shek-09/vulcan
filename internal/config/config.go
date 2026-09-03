@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/joho/godotenv"
 )
@@ -21,6 +22,7 @@ type Config struct {
 	WorkerBinaryPath   string
 	WorkerWorkingDir   string
 	ControlPlaneURL    string
+	AutoscalerInterval time.Duration
 }
 
 // load reads every known environment variable without validating any of
@@ -38,6 +40,7 @@ func load() *Config {
 		WorkerBinaryPath:   os.Getenv("WORKER_BINARY_PATH"),
 		WorkerWorkingDir:   os.Getenv("VULCAN_PROJECT_ROOT"),
 		ControlPlaneURL:    os.Getenv("CONTROL_PLANE_URL"),
+		AutoscalerInterval: parsePositiveDuration(os.Getenv("AUTOSCALER_INTERVAL"), 5*time.Second),
 	}
 }
 
@@ -86,6 +89,23 @@ func parsePositiveInt(value string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+// parsePositiveDuration parses a Go duration string (e.g. "5s", "500ms").
+// An empty, invalid, or non-positive value falls back to the default so a
+// misconfigured environment degrades to a sensible interval instead of
+// disabling the autoscaler outright.
+func parsePositiveDuration(value string, fallback time.Duration) time.Duration {
+	if value == "" {
+		return fallback
+	}
+
+	d, err := time.ParseDuration(value)
+	if err != nil || d <= 0 {
+		return fallback
+	}
+
+	return d
 }
 
 // LoadAggregatorConfig loads and validates the configuration required by

@@ -2,8 +2,20 @@ package autoscaler
 
 import (
 	"context"
+	"errors"
+	"io"
+	"log/slog"
+	"sync/atomic"
+	"testing"
+	"time"
+
 	"vulcan/internal/models"
+	"vulcan/internal/repository"
 )
+
+func testLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
 
 type fakeTestRepository struct {
 	tests []models.Test
@@ -81,7 +93,45 @@ func (f *fakeWorkerRepository) UpdateHeartbeat(
 
 func (f *fakeWorkerRepository) MarkOfflineWorkers(
 	ctx context.Context,
-	_ interface{},
+	_ time.Time,
+) (int64, error) {
+	return 0, nil
+}
+
+func (f *fakeWorkerRepository) ReserveWorkersForTest(
+	context.Context,
+	string,
+	int,
+	[]int,
+) ([]models.Worker, error) {
+	return nil, nil
+}
+
+func (f *fakeWorkerRepository) ReleaseWorkersForTest(context.Context, string) error {
+	return nil
+}
+
+func (f *fakeWorkerRepository) GetReservedAssignment(
+	context.Context,
+	string,
+) (*repository.AssignmentDetails, error) {
+	return nil, nil
+}
+
+func (f *fakeWorkerRepository) MarkAssignmentRunning(context.Context, string, string) error {
+	return nil
+}
+
+func (f *fakeWorkerRepository) MarkAssignmentCompleted(context.Context, string, string) error {
+	return nil
+}
+
+func (f *fakeWorkerRepository) MarkAssignmentFailed(context.Context, string, string) error {
+	return nil
+}
+
+func (f *fakeWorkerRepository) MarkAssignmentsFailedForOfflineWorkers(
+	context.Context,
 ) (int64, error) {
 	return 0, nil
 }
@@ -90,8 +140,8 @@ type fakeProvisioner struct {
 	provisionCount int
 	terminateIDs   []string
 
-	provisionErr  error
-	terminateErr  error
+	provisionErr error
+	terminateErr error
 }
 
 func (f *fakeProvisioner) Provision(
@@ -108,4 +158,315 @@ func (f *fakeProvisioner) Terminate(
 ) error {
 	f.terminateIDs = append([]string(nil), hostnames...)
 	return f.terminateErr
+}
+
+func newWorker(id string, status models.WorkerStatus) models.Worker {
+	return models.Worker{
+		ID:       id,
+		Hostname: id + "-host",
+		Status:   status,
+	}
+}
+
+func newTest(id string, status models.TestStatus, rps int) models.Test {
+	return models.Test{ID: id, Status: status, RPS: rps}
+}
+
+// --- Part 10.1: scale up ---
+
+func TestReconcileScalesUp(t *testing.T) {
+	testRepo := &fakeTestRepository{
+		tests: []models.Test{newTest("t1", models.StatusRunning, 400)}, // ceil(400/100) = 4
+	}
+	workerRepo := &fakeWorkerRepository{
+		workers: []models.Worker{
+			newWorker("w1", models.WorkerStatusIdle),
+			newWorker("w2", models.WorkerStatusIdle),
+		},
+	}
+	prov := &fakeProvisioner{}
+
+	r := NewReconciler(testRepo, workerRepo, prov, 100, testLogger())
+
+	if err := r.Reconcile(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if prov.provisionCount != 2 {
+		t.Fatalf("expected provision(2), got provision(%d)", prov.provisionCount)
+	}
+	if len(prov.terminateIDs) != 0 {
+		t.Fatalf("expected no termination, got %v", prov.terminateIDs)
+	}
+}
+
+// --- Part 10.2: no scaling ---
+
+func TestReconcileNoScaling(t *testing.T) {
+	testRepo := &fakeTestRepository{
+		tests: []models.Test{newTest("t1", models.StatusRunning, 200)}, // ceil(200/100) = 2
+	}
+	workerRepo := &fakeWorkerRepository{
+		workers: []models.Worker{
+			newWorker("w1", models.WorkerStatusRunning),
+			newWorker("w2", models.WorkerStatusRunning),
+		},
+	}
+	prov := &fakeProvisioner{}
+
+	r := NewReconciler(testRepo, workerRepo, prov, 100, testLogger())
+
+	if err := r.Reconcile(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if prov.provisionCount != 0 {
+		t.Fatalf("expected no provisioning, got %d", prov.provisionCount)
+	}
+	if len(prov.terminateIDs) != 0 {
+		t.Fatalf("expected no termination, got %v", prov.terminateIDs)
+	}
+	if len(workerRepo.terminateIDs) != 0 {
+		t.Fatalf("expected no drain request, got %v", workerRepo.terminateIDs)
+	}
+}
+
+// --- Part 10.3: scale down ---
+
+func TestReconcileScalesDown(t *testing.T) {
+	testRepo := &fakeTestRepository{
+		tests: []models.Test{newTest("t1", models.StatusRunning, 100)}, // ceil(100/100) = 1
+	}
+	workerRepo := &fakeWorkerRepository{
+		workers: []models.Worker{
+			newWorker("w1", models.WorkerStatusIdle),
+			newWorker("w2", models.WorkerStatusIdle),
+			newWorker("w3", models.WorkerStatusIdle),
+		},
+	}
+	prov := &fakeProvisioner{}
+
+	r := NewReconciler(testRepo, workerRepo, prov, 100, testLogger())
+
+	if err := r.Reconcile(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(prov.terminateIDs) != 2 {
+		t.Fatalf("expected 2 workers terminated, got %d (%v)", len(prov.terminateIDs), prov.terminateIDs)
+	}
+	if prov.provisionCount != 0 {
+		t.Fatalf("expected no provisioning, got %d", prov.provisionCount)
+	}
+}
+
+// --- Part 10.4: active workers protected ---
+
+func TestReconcileProtectsActiveWorkers(t *testing.T) {
+	testRepo := &fakeTestRepository{} // no active tests -> desired == 0
+	workerRepo := &fakeWorkerRepository{
+		workers: []models.Worker{
+			newWorker("running", models.WorkerStatusRunning),
+			newWorker("reserved", models.WorkerStatusReserved),
+			newWorker("idle", models.WorkerStatusIdle),
+		},
+	}
+	prov := &fakeProvisioner{}
+
+	r := NewReconciler(testRepo, workerRepo, prov, 100, testLogger())
+
+	if err := r.Reconcile(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(workerRepo.terminateIDs) != 1 || workerRepo.terminateIDs[0] != "idle" {
+		t.Fatalf("expected only the idle worker to be drained, got %v", workerRepo.terminateIDs)
+	}
+	if len(prov.terminateIDs) != 1 || prov.terminateIDs[0] != "idle-host" {
+		t.Fatalf("expected only the idle worker's process terminated, got %v", prov.terminateIDs)
+	}
+}
+
+// --- Part 10.5: multiple active tests ---
+
+func TestReconcileMultipleActiveTests(t *testing.T) {
+	testRepo := &fakeTestRepository{
+		tests: []models.Test{
+			newTest("a", models.StatusRunning, 250),  // ceil(250/100) = 3
+			newTest("b", models.StatusStarting, 150), // ceil(150/100) = 2
+		},
+	}
+	workerRepo := &fakeWorkerRepository{}
+	prov := &fakeProvisioner{}
+
+	r := NewReconciler(testRepo, workerRepo, prov, 100, testLogger())
+
+	if err := r.Reconcile(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if prov.provisionCount != 5 {
+		t.Fatalf("expected desired capacity 5, provisioned %d", prov.provisionCount)
+	}
+}
+
+// --- Part 10.6: provisioning failure ---
+
+func TestReconcileProvisioningFailure(t *testing.T) {
+	testRepo := &fakeTestRepository{
+		tests: []models.Test{newTest("t1", models.StatusRunning, 400)},
+	}
+	workerRepo := &fakeWorkerRepository{}
+	prov := &fakeProvisioner{provisionErr: errors.New("provision boom")}
+
+	r := NewReconciler(testRepo, workerRepo, prov, 100, testLogger())
+
+	if err := r.Reconcile(context.Background()); err == nil {
+		t.Fatal("expected Reconcile to return an error")
+	}
+}
+
+// --- Part 10.7: termination failure ---
+
+func TestReconcileTerminationFailure(t *testing.T) {
+	testRepo := &fakeTestRepository{} // desired == 0
+	workerRepo := &fakeWorkerRepository{
+		workers: []models.Worker{newWorker("w1", models.WorkerStatusIdle)},
+	}
+	prov := &fakeProvisioner{terminateErr: errors.New("terminate boom")}
+
+	r := NewReconciler(testRepo, workerRepo, prov, 100, testLogger())
+
+	if err := r.Reconcile(context.Background()); err == nil {
+		t.Fatal("expected Reconcile to return an error")
+	}
+
+	// The atomic IDLE -> DRAINING transition must still have happened
+	// (the repository call succeeded) even though the process termination
+	// failed afterwards -- the worker is protected from reassignment
+	// either way.
+	if len(workerRepo.terminateIDs) != 1 || workerRepo.terminateIDs[0] != "w1" {
+		t.Fatalf("expected worker w1 to have been marked draining, got %v", workerRepo.terminateIDs)
+	}
+}
+
+// --- Part 10.8: context cancellation stops the loop ---
+
+func TestRunStopsOnContextCancellation(t *testing.T) {
+	testRepo := &fakeTestRepository{}
+	workerRepo := &fakeWorkerRepository{}
+	prov := &fakeProvisioner{}
+
+	r := NewReconciler(testRepo, workerRepo, prov, 100, testLogger())
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() {
+		done <- r.Run(ctx, 5*time.Millisecond)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context.Canceled, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not exit after context cancellation")
+	}
+}
+
+// --- Part 10.9: reconciliation cycles never overlap ---
+
+type overlapTrackingWorkerRepo struct {
+	fakeWorkerRepository
+
+	inFlight int32
+	overlap  int32
+	calls    int32
+	delay    time.Duration
+}
+
+func (r *overlapTrackingWorkerRepo) GetWorkers(ctx context.Context) ([]models.Worker, error) {
+	if atomic.AddInt32(&r.inFlight, 1) > 1 {
+		atomic.StoreInt32(&r.overlap, 1)
+	}
+	atomic.AddInt32(&r.calls, 1)
+
+	time.Sleep(r.delay)
+
+	atomic.AddInt32(&r.inFlight, -1)
+
+	return r.fakeWorkerRepository.GetWorkers(ctx)
+}
+
+func TestRunDoesNotOverlapReconciliations(t *testing.T) {
+	testRepo := &fakeTestRepository{}
+	workerRepo := &overlapTrackingWorkerRepo{delay: 40 * time.Millisecond}
+	prov := &fakeProvisioner{}
+
+	r := NewReconciler(testRepo, workerRepo, prov, 100, testLogger())
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() {
+		done <- r.Run(ctx, 5*time.Millisecond)
+	}()
+
+	// Each cycle takes 40ms; ticking every 5ms would fire ~30 times in
+	// 150ms if cycles overlapped. A synchronous loop only manages ~3-4.
+	time.Sleep(150 * time.Millisecond)
+	cancel()
+	<-done
+
+	if atomic.LoadInt32(&workerRepo.overlap) != 0 {
+		t.Fatal("detected overlapping reconciliation cycles")
+	}
+
+	calls := atomic.LoadInt32(&workerRepo.calls)
+	if calls < 2 {
+		t.Fatalf("expected the loop to have reconciled more than once, got %d calls", calls)
+	}
+}
+
+// --- Part 10.10: a failed reconciliation does not stop the loop ---
+
+type failOnceTestRepository struct {
+	fakeTestRepository
+	calls int32
+}
+
+func (f *failOnceTestRepository) GetTests(ctx context.Context) ([]models.Test, error) {
+	if atomic.AddInt32(&f.calls, 1) == 1 {
+		return nil, errors.New("transient failure")
+	}
+	return f.fakeTestRepository.GetTests(ctx)
+}
+
+func TestRunContinuesAfterReconciliationFailure(t *testing.T) {
+	testRepo := &failOnceTestRepository{}
+	workerRepo := &fakeWorkerRepository{}
+	prov := &fakeProvisioner{}
+
+	r := NewReconciler(testRepo, workerRepo, prov, 100, testLogger())
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() {
+		done <- r.Run(ctx, 10*time.Millisecond)
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	<-done
+
+	calls := atomic.LoadInt32(&testRepo.calls)
+	if calls < 2 {
+		t.Fatalf("expected the loop to keep reconciling after a failure, only saw %d calls", calls)
+	}
 }

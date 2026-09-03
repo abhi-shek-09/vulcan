@@ -7,6 +7,7 @@ import (
 	"os"
 	"vulcan/internal/api/handlers"
 	"vulcan/internal/api/router"
+	"vulcan/internal/autoscaler"
 	"vulcan/internal/config"
 	"vulcan/internal/dashboard"
 	"vulcan/internal/db"
@@ -50,12 +51,29 @@ func main() {
 		cfg.NATSURL,
 		cfg.ControlPlaneURL,
 	)
+
+	// The autoscaler owns fleet-capacity decisions: it periodically
+	// reconciles the worker fleet against currently active tests, and
+	// TestService also asks it to reconcile immediately when a test start
+	// needs more workers than are currently idle. Routing both paths
+	// through the same Reconciler (which serializes itself internally)
+	// keeps provisioning/termination as a single, coherent policy instead
+	// of Phase 8's test-start provisioning racing the autoscaler.
+	fleetReconciler := autoscaler.NewReconciler(
+		testRepository,
+		workerRepository,
+		workerProvisioner,
+		cfg.WorkerCapacityRPS,
+		logger,
+	)
+
 	testService := service.NewTestService(
 		testRepository,
 		schedulerSvc,
 		workerRepository,
 		workerProvisioner,
 		cfg.WorkerCapacityRPS,
+		fleetReconciler,
 	)
 	testHandler := handlers.NewTestHandler(testService)
 
@@ -65,6 +83,12 @@ func main() {
 	defer cancel()
 
 	go workerReconciler.Start(ctx)
+
+	go func() {
+		if err := fleetReconciler.Run(ctx, cfg.AutoscalerInterval); err != nil && ctx.Err() == nil {
+			logger.Error("worker fleet autoscaler stopped unexpectedly", "error", err)
+		}
+	}()
 
 	victoriaClient := dashboard.NewClient(
 		cfg.VictoriaMetricsURL,
