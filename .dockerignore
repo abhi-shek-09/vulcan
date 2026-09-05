@@ -1,0 +1,33 @@
+# Version control
+.git
+.gitignore
+
+# Environment files -- real secrets must never be baked into an image.
+# The Dockerfile does not need these at build time; runtime config is
+# injected via docker-compose.yml's `environment:` blocks instead.
+.env
+.env.example
+deployments/docker/.env
+deployments/docker/.env.example
+
+# Logs / local run artifacts
+*.log
+tmp/
+coverage/
+coverage.out
+coverage.html
+
+# Editor / OS cruft
+.vscode
+.idea
+.DS_Store
+
+# Node (grafana provisioning tooling etc., if ever added)
+node_modules
+
+# Docs and scripts are not needed inside the runtime image
+docs/
+scripts/
+
+# Don't exclude anything the build actually needs:
+#   go.mod, go.sum, cmd/, internal/, pkg/, migrations/, configs/

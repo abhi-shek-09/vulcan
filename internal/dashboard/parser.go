@@ -51,7 +51,7 @@ func ParseSeries(
 	}
 
 	result, ok := data["result"].([]interface{})
-	if !ok || len(result)==0 {
+	if !ok || len(result) == 0 {
 		return nil
 	}
 
@@ -63,12 +63,12 @@ func ParseSeries(
 	if !ok {
 		return nil
 	}
-	points := make([]DataPoint,0)
+	points := make([]DataPoint, 0)
 	for _, item := range values {
 
 		pair, ok := item.([]interface{})
 
-		if !ok || len(pair)<2 {
+		if !ok || len(pair) < 2 {
 			continue
 		}
 
@@ -84,7 +84,6 @@ func ParseSeries(
 			continue
 		}
 
-
 		value, err := strconv.ParseFloat(
 			val,
 			64,
@@ -96,8 +95,8 @@ func ParseSeries(
 		points = append(
 			points,
 			DataPoint{
-				Timestamp:int64(ts),
-				Value:value,
+				Timestamp: int64(ts),
+				Value:     value,
 			},
 		)
 	}

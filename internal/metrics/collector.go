@@ -6,17 +6,17 @@ import (
 )
 
 type Collector struct {
-	mu sync.Mutex
-	testID   string
-	workerID string
-	windowStart time.Time
-	requests  int64
-	successes int64
-	failures  int64
+	mu            sync.Mutex
+	testID        string
+	workerID      string
+	windowStart   time.Time
+	requests      int64
+	successes     int64
+	failures      int64
 	bytesSent     int64
 	bytesReceived int64
-	totalLatency time.Duration
-	maxLatency   time.Duration
+	totalLatency  time.Duration
+	maxLatency    time.Duration
 }
 
 func NewCollector(testID, workerID string) *Collector {

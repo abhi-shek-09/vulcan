@@ -7,20 +7,17 @@ import (
 	"net/url"
 )
 
-
 type Client struct {
-	baseURL string
+	baseURL    string
 	httpClient *http.Client
 }
 
-
 func NewClient(baseURL string) *Client {
 	return &Client{
-		baseURL: baseURL,
+		baseURL:    baseURL,
 		httpClient: &http.Client{},
 	}
 }
-
 
 func (c *Client) Query(query string) (map[string]interface{}, error) {
 
@@ -61,8 +58,6 @@ func (c *Client) Query(query string) (map[string]interface{}, error) {
 	return result, err
 }
 
-
-
 func (c *Client) QueryRange(
 	query string,
 	start string,
@@ -85,7 +80,7 @@ func (c *Client) QueryRange(
 	params.Set("latency_offset", "1ms")
 
 	resp, err := c.httpClient.Get(
-		endpoint+"?"+params.Encode(),
+		endpoint + "?" + params.Encode(),
 	)
 
 	if err != nil {

@@ -30,9 +30,9 @@ func (s *Simulator) Run(ctx context.Context) {
 			latency := time.Duration(10+rand.Intn(190)) * time.Millisecond
 			success := rand.Intn(100) < 95
 			req := RequestResult{
-				Latency:      latency,
-				Success:      success,
-				BytesSent:    int64(500 + rand.Intn(1000)),
+				Latency:       latency,
+				Success:       success,
+				BytesSent:     int64(500 + rand.Intn(1000)),
 				BytesReceived: int64(1000 + rand.Intn(4000)),
 			}
 

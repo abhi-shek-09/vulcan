@@ -287,6 +287,66 @@ func TestReconcileProtectsActiveWorkers(t *testing.T) {
 	}
 }
 
+// --- Part 10.4b: a pending (CREATED, not-yet-started) test protects the
+// idle worker it will need from being drained as excess capacity. This is
+// the Phase 10 lifecycle bug: previously DesiredCapacity (and therefore the
+// scale-down decision) only looked at STARTING/RUNNING tests, so a freshly
+// created test sitting at CREATED contributed zero to "desired", the sole
+// idle worker looked like pure excess, and the reconciler drained it before
+// the test ever got a chance to call /start and reserve it. ---
+
+func TestReconcileProtectsWorkersForPendingTests(t *testing.T) {
+	testRepo := &fakeTestRepository{
+		tests: []models.Test{newTest("t1", models.StatusCreated, 100)}, // ceil(100/100) = 1, desired == 0
+	}
+	workerRepo := &fakeWorkerRepository{
+		workers: []models.Worker{
+			newWorker("w1", models.WorkerStatusIdle),
+		},
+	}
+	prov := &fakeProvisioner{}
+
+	r := NewReconciler(testRepo, workerRepo, prov, 100, testLogger())
+
+	if err := r.Reconcile(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(workerRepo.terminateIDs) != 0 {
+		t.Fatalf("expected the worker needed by the pending test to survive, got drained: %v", workerRepo.terminateIDs)
+	}
+	if prov.provisionCount != 0 {
+		t.Fatalf("a CREATED test must not itself trigger provisioning, got %d", prov.provisionCount)
+	}
+}
+
+// A pending test only protects the workers it actually needs -- any
+// idle capacity beyond that is still genuine excess and must still be
+// drained.
+func TestReconcilePendingTestDoesNotProtectExcessBeyondItsNeed(t *testing.T) {
+	testRepo := &fakeTestRepository{
+		tests: []models.Test{newTest("t1", models.StatusCreated, 100)}, // needs 1 worker
+	}
+	workerRepo := &fakeWorkerRepository{
+		workers: []models.Worker{
+			newWorker("w1", models.WorkerStatusIdle),
+			newWorker("w2", models.WorkerStatusIdle),
+			newWorker("w3", models.WorkerStatusIdle),
+		},
+	}
+	prov := &fakeProvisioner{}
+
+	r := NewReconciler(testRepo, workerRepo, prov, 100, testLogger())
+
+	if err := r.Reconcile(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(workerRepo.terminateIDs) != 2 {
+		t.Fatalf("expected 2 excess workers drained beyond the 1 the pending test needs, got %d (%v)", len(workerRepo.terminateIDs), workerRepo.terminateIDs)
+	}
+}
+
 // --- Part 10.5: multiple active tests ---
 
 func TestReconcileMultipleActiveTests(t *testing.T) {

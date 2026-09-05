@@ -1,4 +1,5 @@
 package scheduler
+
 import "errors"
 
 var (

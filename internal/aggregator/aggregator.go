@@ -2,18 +2,18 @@ package aggregator
 
 import (
 	"context"
+	"github.com/nats-io/nats.go"
 	"log/slog"
 	"time"
 	"vulcan/internal/config"
 	"vulcan/internal/victoria"
-	"github.com/nats-io/nats.go"
 )
 
 type Aggregator struct {
 	logger *slog.Logger
 	config *config.Config
-	conn *nats.Conn
-	store *Store
+	conn   *nats.Conn
+	store  *Store
 	writer *victoria.Writer
 }
 
@@ -27,7 +27,7 @@ func New(cfg *config.Config, logger *slog.Logger) (*Aggregator, error) {
 		logger: logger,
 		config: cfg,
 		conn:   nc,
-		store: NewStore(),
+		store:  NewStore(),
 		writer: victoria.New(cfg.VictoriaMetricsURL),
 	}, nil
 }
@@ -69,17 +69,17 @@ func (a *Aggregator) report() {
 		}
 
 		snapshots = append(snapshots, Snapshot{
-			TestID: window.TestID,
-			Workers: len(window.Workers),
-			Requests: window.Requests,
-			Successes: window.Successes,
-			Failures: window.Failures,
-			BytesSent: window.BytesSent,
+			TestID:        window.TestID,
+			Workers:       len(window.Workers),
+			Requests:      window.Requests,
+			Successes:     window.Successes,
+			Failures:      window.Failures,
+			BytesSent:     window.BytesSent,
 			BytesReceived: window.BytesReceived,
-			AvgLatency: avgLatency,
-			MaxLatency: window.MaxLatency,
-			SuccessRate: successRate,
-			RPS: window.Requests,
+			AvgLatency:    avgLatency,
+			MaxLatency:    window.MaxLatency,
+			SuccessRate:   successRate,
+			RPS:           window.Requests,
 		})
 
 		window.Requests = 0

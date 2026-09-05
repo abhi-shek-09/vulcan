@@ -14,12 +14,12 @@ type Writer struct {
 
 func New(url string) *Writer {
 	return &Writer{
-		url: url,
+		url:    url,
 		client: &http.Client{},
 	}
 }
 
-func (w *Writer) Write(ctx context.Context,	body string) error {
+func (w *Writer) Write(ctx context.Context, body string) error {
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,

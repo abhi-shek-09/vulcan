@@ -214,10 +214,29 @@ func (wr *PostgresWorkerRepository) GetWorkerByID(ctx context.Context, id string
 }
 
 func (wr *PostgresWorkerRepository) UpdateHeartbeat(ctx context.Context, id string, status models.WorkerStatus) error {
+	// A worker only knows its own local execution state (IDLE while
+	// waiting, RUNNING while executing an assignment). It has no way of
+	// knowing that the control plane has independently reserved it for a
+	// test (RESERVED), decided to drain it (DRAINING), or already
+	// declared it OFFLINE after a missed-heartbeat timeout. Those are
+	// server-authoritative states.
+	//
+	// If a heartbeat's self-reported status were allowed to blindly
+	// overwrite one of those states, a worker sitting idle between being
+	// reserved and picking up its assignment on the next poll tick would
+	// flip itself back to IDLE mid-reservation, and a worker the
+	// autoscaler just marked DRAINING would immediately un-drain itself
+	// on its next heartbeat -- silently violating the scale-down safety
+	// invariant that a reserved/draining worker must never be handed
+	// back out. last_heartbeat/updated_at are still always refreshed so
+	// liveness tracking (MarkOfflineWorkers) keeps working regardless.
 	const query = `
 		UPDATE workers
 		SET
-			status = $1,
+			status = CASE
+				WHEN status IN ('RESERVED', 'DRAINING', 'OFFLINE') THEN status
+				ELSE $1
+			END,
 			last_heartbeat = $2,
 			updated_at = $2
 		WHERE id = $3

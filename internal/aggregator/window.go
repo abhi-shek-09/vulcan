@@ -8,18 +8,18 @@ import (
 )
 
 type GlobalWindow struct {
-	mu sync.Mutex
-	TestID string
-	WindowStart time.Time
-	WindowEnd   time.Time
-	Requests int64
-	Successes int64
-	Failures  int64
+	mu            sync.Mutex
+	TestID        string
+	WindowStart   time.Time
+	WindowEnd     time.Time
+	Requests      int64
+	Successes     int64
+	Failures      int64
 	BytesSent     int64
 	BytesReceived int64
-	TotalLatency float64
-	MaxLatency float64
-	Workers map[string]struct{}
+	TotalLatency  float64
+	MaxLatency    float64
+	Workers       map[string]struct{}
 }
 
 func NewGlobalWindow(testID string) *GlobalWindow {

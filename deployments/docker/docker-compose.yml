@@ -21,14 +21,23 @@ services:
       retries: 20
 
   nats:
-    image: nats:latest
+    image: nats:2.11-alpine
     container_name: vulcan-nats
+
+    command:
+      - "--http_port=8222"
 
     ports:
       - "4222:4222"
 
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8222/healthz >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   victoriametrics:
-    image: victoriametrics/victoria-metrics
+    image: victoriametrics/victoria-metrics:v1.124.0
     container_name: vulcan-victoria
 
     command:
@@ -40,19 +49,33 @@ services:
     volumes:
       - victoria-data:/storage
 
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8428/health >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:12.1.1
     container_name: vulcan-grafana
 
     depends_on:
-      - victoriametrics
+      victoriametrics:
+        condition: service_healthy
 
     ports:
       - "3000:3000"
 
     volumes:
+      - grafana-data:/var/lib/grafana
       - ../grafana/provisioning:/etc/grafana/provisioning
       - ../grafana/dashboards:/var/lib/grafana/dashboards
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:3000/api/health >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   migrate:
     build:
@@ -86,23 +109,61 @@ services:
       migrate:
         condition: service_completed_successfully
       nats:
-        condition: service_started
+        condition: service_healthy
       victoriametrics:
-        condition: service_started
+        condition: service_healthy
 
     ports:
       - "8080:8080"
 
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/health >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      
     environment:
-      PORT: "8080"
+      PORT: "${PORT:-8080}"
       DB_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
-      VICTORIA_METRICS_URL: http://victoriametrics:8428
-      NATS_URL: nats://nats:4222
-      WORKER_CAPACITY_RPS: "100"
-      WORKER_BINARY_PATH: /usr/local/bin/worker
-      VULCAN_PROJECT_ROOT: /app
-      CONTROL_PLANE_URL: http://control-plane:8080
+      VICTORIA_METRICS_URL: ${VICTORIA_METRICS_URL:-http://victoriametrics:8428}
+      NATS_URL: ${NATS_URL:-nats://nats:4222}
+      # RPS a single worker is assumed able to sustain; drives both the
+      # scheduler's worker-count calculation and the Phase 9 autoscaler's
+      # desired/pending capacity math (see internal/autoscaler).
+      WORKER_CAPACITY_RPS: "${WORKER_CAPACITY_RPS:-100}"
+      # Consumed by the Phase 9 ProcessProvisioner when the autoscaler
+      # needs to launch additional worker processes inside this same
+      # container -- see docs/phase10.md#autoscaling.
+      WORKER_BINARY_PATH: ${WORKER_BINARY_PATH:-/usr/local/bin/worker}
+      # NOTE: internal/config reads the provisioned worker's working
+      # directory from VULCAN_PROJECT_ROOT (not WORKER_WORKING_DIR) --
+      # preserved as-is here rather than renamed, per the existing
+      # configuration architecture. See docs/phase10.md#configuration.
+      VULCAN_PROJECT_ROOT: ${VULCAN_PROJECT_ROOT:-/app}
+      CONTROL_PLANE_URL: ${CONTROL_PLANE_URL:-http://control-plane:8080}
+      AUTOSCALER_INTERVAL: ${AUTOSCALER_INTERVAL:-5s}
+  
+  worker:
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile
 
+    container_name: vulcan-worker
+
+    command: worker
+
+    restart: on-failure:5
+
+    depends_on:
+      control-plane:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+
+    environment:
+      NATS_URL: nats://nats:4222
+      CONTROL_PLANE_URL: http://control-plane:8080
+      WORKER_HOSTNAME: worker-compose-1
   aggregator:
     build:
       context: ../..
@@ -116,9 +177,9 @@ services:
 
     depends_on:
       nats:
-        condition: service_started
+        condition: service_healthy
       victoriametrics:
-        condition: service_started
+        condition: service_healthy
 
     environment:
       NATS_URL: nats://nats:4222
@@ -127,3 +188,4 @@ services:
 volumes:
   postgres-data:
   victoria-data:
+  grafana-data:
