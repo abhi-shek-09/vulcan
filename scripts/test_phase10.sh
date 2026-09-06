@@ -297,7 +297,7 @@ fi
 #
 
 START_RESPONSE="$(
-    curl -fsS \
+    curl -sS \
         -X POST "$BASE_URL/api/v1/tests/$TEST_ID/start"
 )"
 

@@ -1,9 +1,11 @@
+// reconciler.go
 package autoscaler
 
 import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -70,10 +72,12 @@ func NewReconciler(
 // CREATED state, leaving StartTest unable to acquire a worker.
 //
 // Scale-up:
+//
 //	target > actual
 //	=> provision target-actual workers
 //
 // Scale-down:
+//
 //	target < actual
 //	=> drain only excess IDLE workers
 //
@@ -200,11 +204,22 @@ func (r *Reconciler) scaleUp(ctx context.Context, count int) error {
 	return nil
 }
 
+// isAutoscalerManagedWorker returns true if the worker was created by the
+// autoscaler/process provisioner.
+func isAutoscalerManagedWorker(hostname string) bool {
+	return strings.HasPrefix(hostname, "vulcan-auto-worker-")
+}
+
 // scaleDown marks excess IDLE workers as DRAINING and then terminates their
 // underlying processes.
 //
 // Only IDLE workers are candidates. RESERVED and RUNNING workers are never
 // selected for termination.
+//
+// Additionally, only workers that are managed by the autoscaler (hostname
+// prefixed with "vulcan-auto-worker-") are eligible for scale-down. Workers
+// like "worker-compose-1" that were started by Docker Compose directly are
+// not owned by the autoscaler and cannot be terminated.
 func (r *Reconciler) scaleDown(
 	ctx context.Context,
 	excess int,
@@ -214,15 +229,23 @@ func (r *Reconciler) scaleDown(
 		return nil
 	}
 
-	if len(idle) == 0 {
+	// Filter out non-autoscaler-managed workers from scale-down candidates.
+	eligible := make([]models.Worker, 0, len(idle))
+	for _, worker := range idle {
+		if isAutoscalerManagedWorker(worker.Hostname) {
+			eligible = append(eligible, worker)
+		}
+	}
+
+	if len(eligible) == 0 {
 		r.logger.Info(
-			"worker fleet has excess capacity but no idle workers",
+			"worker fleet has excess capacity but no eligible idle workers",
 			"excess", excess,
 		)
 		return nil
 	}
 
-	candidates := idle
+	candidates := eligible
 
 	if len(candidates) > excess {
 		candidates = candidates[:excess]

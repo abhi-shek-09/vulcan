@@ -1,3 +1,4 @@
+// reconciler_test.go
 package autoscaler
 
 import (
@@ -160,10 +161,13 @@ func (f *fakeProvisioner) Terminate(
 	return f.terminateErr
 }
 
-func newWorker(id string, status models.WorkerStatus) models.Worker {
+func newWorker(id string, status models.WorkerStatus, hostname string) models.Worker {
+	if hostname == "" {
+		hostname = id + "-host"
+	}
 	return models.Worker{
 		ID:       id,
-		Hostname: id + "-host",
+		Hostname: hostname,
 		Status:   status,
 	}
 }
@@ -180,8 +184,8 @@ func TestReconcileScalesUp(t *testing.T) {
 	}
 	workerRepo := &fakeWorkerRepository{
 		workers: []models.Worker{
-			newWorker("w1", models.WorkerStatusIdle),
-			newWorker("w2", models.WorkerStatusIdle),
+			newWorker("w1", models.WorkerStatusIdle, "vulcan-auto-worker-1"),
+			newWorker("w2", models.WorkerStatusIdle, "vulcan-auto-worker-2"),
 		},
 	}
 	prov := &fakeProvisioner{}
@@ -208,8 +212,8 @@ func TestReconcileNoScaling(t *testing.T) {
 	}
 	workerRepo := &fakeWorkerRepository{
 		workers: []models.Worker{
-			newWorker("w1", models.WorkerStatusRunning),
-			newWorker("w2", models.WorkerStatusRunning),
+			newWorker("w1", models.WorkerStatusRunning, "vulcan-auto-worker-1"),
+			newWorker("w2", models.WorkerStatusRunning, "vulcan-auto-worker-2"),
 		},
 	}
 	prov := &fakeProvisioner{}
@@ -239,9 +243,9 @@ func TestReconcileScalesDown(t *testing.T) {
 	}
 	workerRepo := &fakeWorkerRepository{
 		workers: []models.Worker{
-			newWorker("w1", models.WorkerStatusIdle),
-			newWorker("w2", models.WorkerStatusIdle),
-			newWorker("w3", models.WorkerStatusIdle),
+			newWorker("w1", models.WorkerStatusIdle, "vulcan-auto-worker-1"),
+			newWorker("w2", models.WorkerStatusIdle, "vulcan-auto-worker-2"),
+			newWorker("w3", models.WorkerStatusIdle, "vulcan-auto-worker-3"),
 		},
 	}
 	prov := &fakeProvisioner{}
@@ -266,9 +270,9 @@ func TestReconcileProtectsActiveWorkers(t *testing.T) {
 	testRepo := &fakeTestRepository{} // no active tests -> desired == 0
 	workerRepo := &fakeWorkerRepository{
 		workers: []models.Worker{
-			newWorker("running", models.WorkerStatusRunning),
-			newWorker("reserved", models.WorkerStatusReserved),
-			newWorker("idle", models.WorkerStatusIdle),
+			newWorker("running", models.WorkerStatusRunning, "vulcan-auto-worker-running"),
+			newWorker("reserved", models.WorkerStatusReserved, "vulcan-auto-worker-reserved"),
+			newWorker("idle", models.WorkerStatusIdle, "vulcan-auto-worker-idle"),
 		},
 	}
 	prov := &fakeProvisioner{}
@@ -282,7 +286,7 @@ func TestReconcileProtectsActiveWorkers(t *testing.T) {
 	if len(workerRepo.terminateIDs) != 1 || workerRepo.terminateIDs[0] != "idle" {
 		t.Fatalf("expected only the idle worker to be drained, got %v", workerRepo.terminateIDs)
 	}
-	if len(prov.terminateIDs) != 1 || prov.terminateIDs[0] != "idle-host" {
+	if len(prov.terminateIDs) != 1 || prov.terminateIDs[0] != "vulcan-auto-worker-idle" {
 		t.Fatalf("expected only the idle worker's process terminated, got %v", prov.terminateIDs)
 	}
 }
@@ -301,7 +305,7 @@ func TestReconcileProtectsWorkersForPendingTests(t *testing.T) {
 	}
 	workerRepo := &fakeWorkerRepository{
 		workers: []models.Worker{
-			newWorker("w1", models.WorkerStatusIdle),
+			newWorker("w1", models.WorkerStatusIdle, "vulcan-auto-worker-1"),
 		},
 	}
 	prov := &fakeProvisioner{}
@@ -329,9 +333,9 @@ func TestReconcilePendingTestDoesNotProtectExcessBeyondItsNeed(t *testing.T) {
 	}
 	workerRepo := &fakeWorkerRepository{
 		workers: []models.Worker{
-			newWorker("w1", models.WorkerStatusIdle),
-			newWorker("w2", models.WorkerStatusIdle),
-			newWorker("w3", models.WorkerStatusIdle),
+			newWorker("w1", models.WorkerStatusIdle, "vulcan-auto-worker-1"),
+			newWorker("w2", models.WorkerStatusIdle, "vulcan-auto-worker-2"),
+			newWorker("w3", models.WorkerStatusIdle, "vulcan-auto-worker-3"),
 		},
 	}
 	prov := &fakeProvisioner{}
@@ -391,7 +395,7 @@ func TestReconcileProvisioningFailure(t *testing.T) {
 func TestReconcileTerminationFailure(t *testing.T) {
 	testRepo := &fakeTestRepository{} // desired == 0
 	workerRepo := &fakeWorkerRepository{
-		workers: []models.Worker{newWorker("w1", models.WorkerStatusIdle)},
+		workers: []models.Worker{newWorker("w1", models.WorkerStatusIdle, "vulcan-auto-worker-1")},
 	}
 	prov := &fakeProvisioner{terminateErr: errors.New("terminate boom")}
 
@@ -528,5 +532,117 @@ func TestRunContinuesAfterReconciliationFailure(t *testing.T) {
 	calls := atomic.LoadInt32(&testRepo.calls)
 	if calls < 2 {
 		t.Fatalf("expected the loop to keep reconciling after a failure, only saw %d calls", calls)
+	}
+}
+
+// --- NEW TESTS: ownership filter ---
+
+// TestReconcileDoesNotScaleDownComposeWorker verifies that the autoscaler
+// never selects a non-autoscaler-managed worker (worker-compose-1) for
+// scale-down.
+func TestReconcileDoesNotScaleDownComposeWorker(t *testing.T) {
+	testRepo := &fakeTestRepository{} // desired == 0
+	workerRepo := &fakeWorkerRepository{
+		workers: []models.Worker{
+			// This worker has the exact hostname pattern that caused the bug.
+			// It was started by Docker Compose and is not owned by the autoscaler.
+			newWorker("w1", models.WorkerStatusIdle, "worker-compose-1"),
+		},
+	}
+	prov := &fakeProvisioner{}
+
+	r := NewReconciler(testRepo, workerRepo, prov, 100, testLogger())
+
+	if err := r.Reconcile(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(workerRepo.terminateIDs) != 0 {
+		t.Fatalf("expected compose worker to NOT be drained, got drained: %v", workerRepo.terminateIDs)
+	}
+	if len(prov.terminateIDs) != 0 {
+		t.Fatalf("expected no termination, got %v", prov.terminateIDs)
+	}
+}
+
+// TestReconcileScalesDownAutoscalerManagedWorker verifies that the autoscaler
+// correctly selects autoscaler-managed workers (vulcan-auto-worker-*) for
+// scale-down when they are idle and excess.
+func TestReconcileScalesDownAutoscalerManagedWorker(t *testing.T) {
+	testRepo := &fakeTestRepository{} // desired == 0
+	workerRepo := &fakeWorkerRepository{
+		workers: []models.Worker{
+			newWorker("w1", models.WorkerStatusIdle, "vulcan-auto-worker-1"),
+		},
+	}
+	prov := &fakeProvisioner{}
+
+	r := NewReconciler(testRepo, workerRepo, prov, 100, testLogger())
+
+	if err := r.Reconcile(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(workerRepo.terminateIDs) != 1 {
+		t.Fatalf("expected autoscaler-managed worker to be drained, got %d drained", len(workerRepo.terminateIDs))
+	}
+	if workerRepo.terminateIDs[0] != "w1" {
+		t.Fatalf("expected worker w1 to be drained, got %v", workerRepo.terminateIDs)
+	}
+	if len(prov.terminateIDs) != 1 {
+		t.Fatalf("expected 1 termination, got %d", len(prov.terminateIDs))
+	}
+	if prov.terminateIDs[0] != "vulcan-auto-worker-1" {
+		t.Fatalf("expected termination of vulcan-auto-worker-1, got %v", prov.terminateIDs)
+	}
+}
+
+// TestReconcileScalesDownOnlyAutoscalerManagedWorkers verifies that when
+// both autoscaler-managed and non-autoscaler-managed idle workers exist,
+// only the autoscaler-managed ones are selected for scale-down.
+func TestReconcileScalesDownOnlyAutoscalerManagedWorkers(t *testing.T) {
+	testRepo := &fakeTestRepository{} // desired == 0
+	workerRepo := &fakeWorkerRepository{
+		workers: []models.Worker{
+			// This compose worker should NEVER be selected for scale-down.
+			newWorker("compose", models.WorkerStatusIdle, "worker-compose-1"),
+			// These autoscaler-managed workers should be selected.
+			newWorker("auto1", models.WorkerStatusIdle, "vulcan-auto-worker-1"),
+			newWorker("auto2", models.WorkerStatusIdle, "vulcan-auto-worker-2"),
+		},
+	}
+	prov := &fakeProvisioner{}
+
+	r := NewReconciler(testRepo, workerRepo, prov, 100, testLogger())
+
+	if err := r.Reconcile(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// With desired=0 and 3 idle workers, excess is 3. However, only 2 of
+	// those workers are autoscaler-managed and eligible for scale-down.
+	// The compose worker should be protected.
+	if len(workerRepo.terminateIDs) != 2 {
+		t.Fatalf("expected 2 autoscaler-managed workers to be drained, got %d (%v)", len(workerRepo.terminateIDs), workerRepo.terminateIDs)
+	}
+
+	// Verify the compose worker was NOT selected.
+	for _, id := range workerRepo.terminateIDs {
+		if id == "compose" {
+			t.Fatalf("compose worker was incorrectly selected for scale-down")
+		}
+	}
+
+	// Verify the autoscaler-managed workers WERE selected.
+	selected := make(map[string]bool)
+	for _, id := range workerRepo.terminateIDs {
+		selected[id] = true
+	}
+	if !selected["auto1"] || !selected["auto2"] {
+		t.Fatalf("expected auto1 and auto2 to be drained, got %v", workerRepo.terminateIDs)
+	}
+
+	if len(prov.terminateIDs) != 2 {
+		t.Fatalf("expected 2 terminations, got %d", len(prov.terminateIDs))
 	}
 }

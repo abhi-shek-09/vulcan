@@ -88,7 +88,14 @@ func (wr *PostgresWorkerRepository) MarkAssignmentRunning(
 	testID string,
 	workerID string,
 ) error {
-	const query = `
+	tx, err := wr.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin assignment running transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// Update assignment from RESERVED to RUNNING
+	const updateAssignmentQuery = `
 		UPDATE test_workers
 		SET
 			status = 'RUNNING',
@@ -99,9 +106,9 @@ func (wr *PostgresWorkerRepository) MarkAssignmentRunning(
 			AND status = 'RESERVED';
 	`
 
-	result, err := wr.db.Exec(
+	result, err := tx.Exec(
 		ctx,
-		query,
+		updateAssignmentQuery,
 		testID,
 		workerID,
 	)
@@ -111,6 +118,29 @@ func (wr *PostgresWorkerRepository) MarkAssignmentRunning(
 
 	if result.RowsAffected() == 0 {
 		return apierrors.ErrAssignmentNotFound
+	}
+
+	// Update corresponding worker from RESERVED to RUNNING within the same transaction
+	const updateWorkerQuery = `
+		UPDATE workers
+		SET
+			status = 'RUNNING',
+			updated_at = NOW()
+		WHERE
+			id = $1
+			AND status = 'RESERVED';
+	`
+
+	if _, err := tx.Exec(
+		ctx,
+		updateWorkerQuery,
+		workerID,
+	); err != nil {
+		return fmt.Errorf("update worker to running: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit assignment running transaction: %w", err)
 	}
 
 	return nil
@@ -185,6 +215,25 @@ func (wr *PostgresWorkerRepository) MarkAssignmentCompleted(
 
 	if result.RowsAffected() == 0 {
 		return apierrors.ErrAssignmentNotFound
+	}
+
+	// Update corresponding worker from RUNNING to IDLE within the same transaction
+	const updateWorkerQuery = `
+		UPDATE workers
+		SET
+			status = 'IDLE',
+			updated_at = NOW()
+		WHERE
+			id = $1
+			AND status = 'RUNNING';
+	`
+
+	if _, err := tx.Exec(
+		ctx,
+		updateWorkerQuery,
+		workerID,
+	); err != nil {
+		return fmt.Errorf("update worker to idle: %w", err)
 	}
 
 	const incompleteAssignmentsQuery = `
