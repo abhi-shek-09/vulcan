@@ -170,6 +170,11 @@ curl -s -X POST http://localhost:8080/api/v1/tests/<test_id>/stop
 ```
 
 Full endpoint reference is in [`docs/architecture.md#api-surface`](docs/architecture.md#api-surface).
+<img width="1193" height="472" alt="image" src="https://github.com/user-attachments/assets/47f1b09c-3bd4-498a-8354-147d7ade04f6" />
+
+<img width="1916" height="476" alt="image" src="https://github.com/user-attachments/assets/1c57c08d-eea8-49b7-b6d2-54af62a71499" />
+
+<img width="1601" height="577" alt="image" src="https://github.com/user-attachments/assets/b7833c6a-4528-4d6f-952a-520cdd7bcacf" />
 
 ## Concurrency & design decisions worth knowing
 
